@@ -9,7 +9,7 @@ Converte um arquivo PDF de folha de ponto da Control ID em uma planilha Excel fo
 1. Baixe o arquivo `PDF_Ponto_Excel.exe` da pasta `dist/`
 2. Execute o arquivo
 3. Selecione o PDF de ponto desejado
-4. A planilha será gerada na pasta **Documentos**
+4. Selecione o local onde a planilha será salva
 
 > Não requer Python instalado!
 
@@ -27,7 +27,7 @@ Converte um arquivo PDF de folha de ponto da Control ID em uma planilha Excel fo
    python pdf_para_excel.py
    ```
 4. Selecione o PDF de ponto desejado
-5. A planilha será gerada na pasta **Documentos**
+5. Selecione o local onde a planilha será salva
 
 ## Como criar o executável (.exe)
 
