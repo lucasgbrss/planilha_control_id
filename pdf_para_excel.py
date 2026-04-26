@@ -1,14 +1,48 @@
-# ollama launch claude --model qwen3.5:cloud
-
 import pdfplumber
 from pathlib import Path
 from openpyxl import Workbook
 import re
+import tkinter as tk
+from tkinter import filedialog
+from datetime import datetime
 
-# Caminhos
-pasta_atual = Path(__file__).parent
-pdf_path = pasta_atual / "ponto.pdf"
-excel_path = pasta_atual / "ponto.xlsx"
+def selecionar_pdf():
+    """Abre dialog para selecionar arquivo PDF"""
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes('-topmost', True)
+    pdf_path = filedialog.askopenfilename(
+        title="Selecione o arquivo PDF",
+        filetypes=[("Arquivos PDF", "*.pdf")],
+        initialdir=Path.home() / "Downloads"
+    )
+    root.destroy()
+    return pdf_path
+
+def obter_caminho_saida(nome_pdf):
+    """Retorna caminho na pasta Documentos com nome baseado no PDF"""
+    documentos = Path.home() / "OneDrive" / "Documentos"
+    if not documentos.exists():
+        documentos = Path.home() / "Documentos"
+
+    # Nome do Excel baseado no nome do PDF
+    nome_base = Path(nome_pdf).stem
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    excel_nome = f"{nome_base}_{timestamp}.xlsx"
+
+    return documentos / excel_nome
+
+# Selecionar PDF
+pdf_path = selecionar_pdf()
+if not pdf_path:
+    print("Nenhum arquivo PDF selecionado.")
+    exit()
+
+print(f"PDF selecionado: {pdf_path}")
+
+# Definir caminho de saída
+excel_path = obter_caminho_saida(pdf_path)
+print(f"Planilha será salva em: {excel_path}")
 
 # Extrair tabelas do PDF
 tabelas = []
@@ -208,7 +242,7 @@ for col in ws.columns:
     ws.column_dimensions[column].width = min(max_length + 2, 30)
 
 wb.save(excel_path)
-print(f"Arquivo Excel criado com sucesso: {excel_path}")
+print(f"\nPlanilha criada com sucesso: {excel_path}")
 print(f"Total de dias registrados: {len(dados_ponto)}")
 print("\nInformações extraídas:")
 for k, v in info.items():
