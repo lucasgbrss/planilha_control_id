@@ -19,18 +19,32 @@ def selecionar_pdf():
     root.destroy()
     return pdf_path
 
-def obter_caminho_saida(nome_pdf):
-    """Retorna caminho na pasta Documentos com nome baseado no PDF"""
+def selecionar_local_salvar(nome_pdf):
+    """Abre dialog para selecionar onde salvar o arquivo Excel"""
+    # Nome sugerido baseado no PDF
+    nome_base = Path(nome_pdf).stem
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    nome_sugerido = f"{nome_base}_{timestamp}.xlsx"
+
+    # Pasta inicial sugerida (Documentos)
     documentos = Path.home() / "OneDrive" / "Documentos"
     if not documentos.exists():
         documentos = Path.home() / "Documentos"
 
-    # Nome do Excel baseado no nome do PDF
-    nome_base = Path(nome_pdf).stem
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    excel_nome = f"{nome_base}_{timestamp}.xlsx"
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes('-topmost', True)
 
-    return documentos / excel_nome
+    # Abre dialog para salvar arquivo
+    excel_path = filedialog.asksaveasfilename(
+        title="Salvar planilha Excel",
+        defaultextension=".xlsx",
+        initialfile=nome_sugerido,
+        initialdir=documentos,
+        filetypes=[("Arquivos Excel", "*.xlsx")]
+    )
+    root.destroy()
+    return excel_path
 
 # Selecionar PDF
 pdf_path = selecionar_pdf()
@@ -40,8 +54,12 @@ if not pdf_path:
 
 print(f"PDF selecionado: {pdf_path}")
 
-# Definir caminho de saída
-excel_path = obter_caminho_saida(pdf_path)
+# Selecionar local para salvar o Excel
+excel_path = selecionar_local_salvar(pdf_path)
+if not excel_path:
+    print("Operação cancelada.")
+    exit()
+
 print(f"Planilha será salva em: {excel_path}")
 
 # Extrair tabelas do PDF
@@ -207,29 +225,28 @@ linha_atual += 2  # Linha em branco de separação
 # Cabeçalhos da tabela de ponto - todos na mesma linha
 ws.cell(row=linha_atual, column=1, value="DIA")
 ws.cell(row=linha_atual, column=2, value="MARCAÇÕES REGISTRADAS\nNO PONTO ELETRÔNICO")
-ws.cell(row=linha_atual, column=3, value="JORNADA REALIZADA")
-ws.cell(row=linha_atual, column=4, value="ENT. 1")
-ws.cell(row=linha_atual, column=5, value="SAÍ. 1")
-ws.cell(row=linha_atual, column=6, value="ENT. 2")
-ws.cell(row=linha_atual, column=7, value="SAÍ. 2")
-ws.cell(row=linha_atual, column=8, value="ENT. 3")
-ws.cell(row=linha_atual, column=9, value="SAÍ. 3")
-ws.cell(row=linha_atual, column=10, value="DURAÇÃO")
-ws.cell(row=linha_atual, column=11, value="CH")
+ws.cell(row=linha_atual, column=3, value="ENT. 1")
+ws.cell(row=linha_atual, column=4, value="SAÍ. 1")
+ws.cell(row=linha_atual, column=5, value="ENT. 2")
+ws.cell(row=linha_atual, column=6, value="SAÍ. 2")
+ws.cell(row=linha_atual, column=7, value="ENT. 3")
+ws.cell(row=linha_atual, column=8, value="SAÍ. 3")
+ws.cell(row=linha_atual, column=9, value="DURAÇÃO")
+ws.cell(row=linha_atual, column=10, value="CH")
 linha_atual += 1
 
 # Dados de cada dia
 for dia, dados in dados_ponto.items():
     ws.cell(row=linha_atual, column=1, value=dia)
     ws.cell(row=linha_atual, column=2, value=dados["marcacoes"])
-    ws.cell(row=linha_atual, column=4, value=dados["ent1"])
-    ws.cell(row=linha_atual, column=5, value=dados["sai1"])
-    ws.cell(row=linha_atual, column=6, value=dados["ent2"])
-    ws.cell(row=linha_atual, column=7, value=dados["sai2"])
-    ws.cell(row=linha_atual, column=8, value=dados["ent3"])
-    ws.cell(row=linha_atual, column=9, value=dados["sai3"])
-    ws.cell(row=linha_atual, column=10, value=dados["duracao"])
-    ws.cell(row=linha_atual, column=11, value=dados["ch"])
+    ws.cell(row=linha_atual, column=3, value=dados["ent1"])
+    ws.cell(row=linha_atual, column=4, value=dados["sai1"])
+    ws.cell(row=linha_atual, column=5, value=dados["ent2"])
+    ws.cell(row=linha_atual, column=6, value=dados["sai2"])
+    ws.cell(row=linha_atual, column=7, value=dados["ent3"])
+    ws.cell(row=linha_atual, column=8, value=dados["sai3"])
+    ws.cell(row=linha_atual, column=9, value=dados["duracao"])
+    ws.cell(row=linha_atual, column=10, value=dados["ch"])
     linha_atual += 1
 
 # Ajustar largura das colunas
