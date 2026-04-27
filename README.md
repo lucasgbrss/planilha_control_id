@@ -2,6 +2,13 @@
 
 Converte um arquivo PDF de folha de ponto da Control ID em uma planilha Excel formatada.
 
+## Funcionalidades
+
+- Extrai dados de funcionários (nome, CPF, PIS, cargo, etc.)
+- Extrai marcações de ponto por dia
+- Gera planilha Excel formatada e pronta para uso
+- Interface simples para seleção de arquivos
+
 ## Como usar
 
 ### Opção 1: Executável (.exe) - Recomendado para usuários finais
@@ -33,11 +40,19 @@ Converte um arquivo PDF de folha de ponto da Control ID em uma planilha Excel fo
 
 Se você quer gerar o executável para distribuir:
 
+### Usando o script automático (Windows)
+
+```bash
+./criar_exe.bat
+```
+
+### Manualmente
+
 ```bash
 # Instale as dependências
 pip install -r requirements.txt
 
-# Gere o executável (usa o comando correto para Windows)
+# Gere o executável
 python -m PyInstaller --clean --onefile --windowed --name "PDF_Ponto_Excel" ^
     --collect-all pdfplumber ^
     --collect-all openpyxl ^
@@ -46,7 +61,11 @@ python -m PyInstaller --clean --onefile --windowed --name "PDF_Ponto_Excel" ^
     pdf_para_excel.py
 ```
 
-Ou use o script automático `criar_exe.bat` (Windows).
+Ou use o arquivo `.spec` incluído:
+
+```bash
+pyinstaller PDF_Ponto_Excel.spec
+```
 
 O executável será criado em `dist/PDF_Ponto_Excel.exe` (~55 MB).
 
@@ -58,6 +77,7 @@ pdf_reader/
 ├── requirements.txt       # Dependências do projeto
 ├── README.md              # Este arquivo
 ├── criar_exe.bat          # Script para criar o .exe
+├── PDF_Ponto_Excel.spec   # Configuração do PyInstaller
 └── dist/
     └── PDF_Ponto_Excel.exe  # Executável gerado
 ```
@@ -75,3 +95,7 @@ O Windows pode bloquear a execução do `.exe` por não ser assinado digitalment
 ### Erro "ModuleNotFoundError"
 
 Se o executável falhar com erro de módulo faltando, recrie o `.exe` usando o script `criar_exe.bat` — ele garante que todas as bibliotecas sejam incluídas corretamente.
+
+## Licença
+
+Uso livre.

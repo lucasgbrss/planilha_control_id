@@ -184,69 +184,34 @@ ws.title = "Ponto"
 
 linha_atual = 1
 
-# Informações da empresa
-ws.cell(row=linha_atual, column=1, value="EMPRESA:")
-ws.cell(row=linha_atual, column=2, value=info.get("empresa", ""))
-ws.cell(row=linha_atual, column=5, value="CNPJ:")
-ws.cell(row=linha_atual, column=6, value=info.get("cnpj", ""))
-linha_atual += 1
-
-ws.cell(row=linha_atual, column=1, value="ENDEREÇO:")
-ws.cell(row=linha_atual, column=2, value=info.get("endereco", ""))
-linha_atual += 2  # Linha em branco
-
-# Informações do funcionário
-ws.cell(row=linha_atual, column=1, value="NOME:")
-ws.cell(row=linha_atual, column=2, value=info.get("nome", ""))
-linha_atual += 1
-
-ws.cell(row=linha_atual, column=1, value="PIS/PASEP:")
-ws.cell(row=linha_atual, column=2, value=info.get("pis", ""))
-ws.cell(row=linha_atual, column=5, value="ADMISSÃO:")
-ws.cell(row=linha_atual, column=6, value=info.get("admissao", ""))
-linha_atual += 1
-
-ws.cell(row=linha_atual, column=1, value="CPF:")
-ws.cell(row=linha_atual, column=2, value=info.get("cpf", ""))
-ws.cell(row=linha_atual, column=5, value="MATRÍCULA:")
-ws.cell(row=linha_atual, column=6, value=info.get("matricula", ""))
-linha_atual += 1
-
-ws.cell(row=linha_atual, column=1, value="CENTRO DE CUSTO:")
-ws.cell(row=linha_atual, column=2, value=info.get("centro_custo", ""))
-linha_atual += 1
-
-ws.cell(row=linha_atual, column=1, value="DEPARTAMENTO:")
-ws.cell(row=linha_atual, column=2, value=info.get("departamento", ""))
-ws.cell(row=linha_atual, column=5, value="CARGO:")
-ws.cell(row=linha_atual, column=6, value=info.get("cargo", ""))
-linha_atual += 2  # Linha em branco de separação
-
 # Cabeçalhos da tabela de ponto - todos na mesma linha
-ws.cell(row=linha_atual, column=1, value="DIA")
-ws.cell(row=linha_atual, column=2, value="MARCAÇÕES REGISTRADAS\nNO PONTO ELETRÔNICO")
-ws.cell(row=linha_atual, column=3, value="ENT. 1")
-ws.cell(row=linha_atual, column=4, value="SAÍ. 1")
-ws.cell(row=linha_atual, column=5, value="ENT. 2")
-ws.cell(row=linha_atual, column=6, value="SAÍ. 2")
-ws.cell(row=linha_atual, column=7, value="ENT. 3")
-ws.cell(row=linha_atual, column=8, value="SAÍ. 3")
-ws.cell(row=linha_atual, column=9, value="DURAÇÃO")
-ws.cell(row=linha_atual, column=10, value="CH")
+ws.cell(row=linha_atual, column=1, value="FUNCIONÁRIO")
+ws.cell(row=linha_atual, column=2, value="DIA")
+ws.cell(row=linha_atual, column=3, value="MARCAÇÕES REGISTRADAS\nNO PONTO ELETRÔNICO")
+ws.cell(row=linha_atual, column=4, value="ENT. 1")
+ws.cell(row=linha_atual, column=5, value="SAÍ. 1")
+ws.cell(row=linha_atual, column=6, value="ENT. 2")
+ws.cell(row=linha_atual, column=7, value="SAÍ. 2")
+ws.cell(row=linha_atual, column=8, value="ENT. 3")
+ws.cell(row=linha_atual, column=9, value="SAÍ. 3")
+ws.cell(row=linha_atual, column=10, value="DURAÇÃO")
+ws.cell(row=linha_atual, column=11, value="CH")
 linha_atual += 1
+
 
 # Dados de cada dia
 for dia, dados in dados_ponto.items():
-    ws.cell(row=linha_atual, column=1, value=dia)
-    ws.cell(row=linha_atual, column=2, value=dados["marcacoes"])
-    ws.cell(row=linha_atual, column=3, value=dados["ent1"])
-    ws.cell(row=linha_atual, column=4, value=dados["sai1"])
-    ws.cell(row=linha_atual, column=5, value=dados["ent2"])
-    ws.cell(row=linha_atual, column=6, value=dados["sai2"])
-    ws.cell(row=linha_atual, column=7, value=dados["ent3"])
-    ws.cell(row=linha_atual, column=8, value=dados["sai3"])
-    ws.cell(row=linha_atual, column=9, value=dados["duracao"])
-    ws.cell(row=linha_atual, column=10, value=dados["ch"])
+    ws.cell(row=linha_atual, column=1, value=info.get("nome", ""))
+    ws.cell(row=linha_atual, column=2, value=dia)
+    ws.cell(row=linha_atual, column=3, value=dados["marcacoes"])
+    ws.cell(row=linha_atual, column=4, value=dados["ent1"])
+    ws.cell(row=linha_atual, column=5, value=dados["sai1"])
+    ws.cell(row=linha_atual, column=6, value=dados["ent2"])
+    ws.cell(row=linha_atual, column=7, value=dados["sai2"])
+    ws.cell(row=linha_atual, column=8, value=dados["ent3"])
+    ws.cell(row=linha_atual, column=9, value=dados["sai3"])
+    ws.cell(row=linha_atual, column=10, value=dados["duracao"])
+    ws.cell(row=linha_atual, column=11, value=dados["ch"])
     linha_atual += 1
 
 # Ajustar largura das colunas
