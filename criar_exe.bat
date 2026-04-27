@@ -15,6 +15,6 @@ python -m PyInstaller --clean --onefile --windowed --name "Control ID Reader" --
 echo.
 echo ========================================
 echo  Concluido!
-echo  O executavel esta em: dist\PDF_Ponto_Excel.exe
+echo  O executavel esta em: dist\Control ID Reader.exe
 echo ========================================
 pause

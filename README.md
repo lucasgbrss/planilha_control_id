@@ -1,4 +1,4 @@
-# PDF de Ponto para Excel
+# Control ID Reader
 
 Converte um arquivo PDF de folha de ponto da Control ID em uma planilha Excel formatada.
 
@@ -11,18 +11,11 @@ Converte um arquivo PDF de folha de ponto da Control ID em uma planilha Excel fo
 
 ## Como usar
 
-### Opção 1: Executável (.exe) - Recomendado para usuários finais
+### Pré-requisitos
 
-1. Baixe o arquivo `PDF_Ponto_Excel.exe` da pasta `dist/`
-2. Execute o arquivo
-3. Selecione o PDF de ponto desejado
-4. Selecione o local onde a planilha será salva
+- Python 3.8 ou superior instalado (https://python.org)
 
-> Não requer Python instalado!
-
-### Opção 2: Rodar o script Python
-
-**Pré-requisitos:** Python 3.8 ou superior instalado (https://python.org)
+### Passos
 
 1. Abra o terminal nesta pasta
 2. Instale as dependências:
@@ -38,7 +31,7 @@ Converte um arquivo PDF de folha de ponto da Control ID em uma planilha Excel fo
 
 ## Como criar o executável (.exe)
 
-Se você quer gerar o executável para distribuir:
+Opcionalmente, você pode gerar um executável para distribuir:
 
 ### Usando o script automático (Windows)
 
@@ -53,7 +46,7 @@ Se você quer gerar o executável para distribuir:
 pip install -r requirements.txt
 
 # Gere o executável
-python -m PyInstaller --clean --onefile --windowed --name "PDF_Ponto_Excel" ^
+python -m PyInstaller --clean --onefile --windowed --name "Control ID Reader" ^
     --collect-all pdfplumber ^
     --collect-all openpyxl ^
     --collect-all pypdfium2 ^
@@ -64,10 +57,10 @@ python -m PyInstaller --clean --onefile --windowed --name "PDF_Ponto_Excel" ^
 Ou use o arquivo `.spec` incluído:
 
 ```bash
-pyinstaller PDF_Ponto_Excel.spec
+pyinstaller Control ID Reader.spec
 ```
 
-O executável será criado em `dist/PDF_Ponto_Excel.exe` (~55 MB).
+O executável será criado em `dist/Control ID Reader.exe` (~55 MB).
 
 ## Estrutura do projeto
 
@@ -77,9 +70,8 @@ pdf_reader/
 ├── requirements.txt       # Dependências do projeto
 ├── README.md              # Este arquivo
 ├── criar_exe.bat          # Script para criar o .exe
-├── PDF_Ponto_Excel.spec   # Configuração do PyInstaller
-└── dist/
-    └── PDF_Ponto_Excel.exe  # Executável gerado
+├── Control ID Reader.spec # Configuração do PyInstaller
+└── dist/                  # Executável gerado (não versionado)
 ```
 
 ## Problemas conhecidos
