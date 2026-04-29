@@ -142,10 +142,14 @@ if match:
 dados_ponto = {}
 dia_atual = None
 
+def get_item(lista, indice):
+    """Acessa índice da lista com segurança, retorna None se fora de alcance"""
+    return lista[indice] if indice < len(lista) else None
+
 for row in tabelas:
     # Detectar nova linha de dia (formato: DD/MM/YY - DIA)
-    if row[0] and any(mes in str(row[0]).upper() for mes in ["SEG", "TER", "QUA", "QUI", "SEX", "SAB", "DOM"]):
-        dia_atual = str(row[0]).strip()
+    if get_item(row, 0) and any(mes in str(get_item(row, 0)).upper() for mes in ["SEG", "TER", "QUA", "QUI", "SEX", "SAB", "DOM"]):
+        dia_atual = str(get_item(row, 0)).strip()
         dados_ponto[dia_atual] = {
             "marcacoes": "",
             "ent1": "", "sai1": "", "ent2": "", "sai2": "", "ent3": "", "sai3": "",
@@ -154,28 +158,28 @@ for row in tabelas:
 
     if dia_atual:
         # Marcações registradas
-        if row[1]:
-            dados_ponto[dia_atual]["marcacoes"] = str(row[1]).strip()
+        if get_item(row, 1):
+            dados_ponto[dia_atual]["marcacoes"] = str(get_item(row, 1)).strip()
 
         # Jornada realizada
-        if row[2]:
-            dados_ponto[dia_atual]["ent1"] = str(row[2]).strip()
-        if row[3]:
-            dados_ponto[dia_atual]["sai1"] = str(row[3]).strip()
-        if row[4]:
-            dados_ponto[dia_atual]["ent2"] = str(row[4]).strip()
-        if row[5]:
-            dados_ponto[dia_atual]["sai2"] = str(row[5]).strip()
-        if row[6]:
-            dados_ponto[dia_atual]["ent3"] = str(row[6]).strip()
-        if row[7]:
-            dados_ponto[dia_atual]["sai3"] = str(row[7]).strip()
+        if get_item(row, 2):
+            dados_ponto[dia_atual]["ent1"] = str(get_item(row, 2)).strip()
+        if get_item(row, 3):
+            dados_ponto[dia_atual]["sai1"] = str(get_item(row, 3)).strip()
+        if get_item(row, 4):
+            dados_ponto[dia_atual]["ent2"] = str(get_item(row, 4)).strip()
+        if get_item(row, 5):
+            dados_ponto[dia_atual]["sai2"] = str(get_item(row, 5)).strip()
+        if get_item(row, 6):
+            dados_ponto[dia_atual]["ent3"] = str(get_item(row, 6)).strip()
+        if get_item(row, 7):
+            dados_ponto[dia_atual]["sai3"] = str(get_item(row, 7)).strip()
 
         # Duração e CH
-        if row[8]:
-            dados_ponto[dia_atual]["duracao"] = str(row[8]).strip()
-        if row[9]:
-            dados_ponto[dia_atual]["ch"] = str(row[9]).strip()
+        if get_item(row, 8):
+            dados_ponto[dia_atual]["duracao"] = str(get_item(row, 8)).strip()
+        if get_item(row, 9):
+            dados_ponto[dia_atual]["ch"] = str(get_item(row, 9)).strip()
 
 # Criar Excel formatado
 wb = Workbook()
