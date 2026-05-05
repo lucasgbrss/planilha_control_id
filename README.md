@@ -1,13 +1,15 @@
-# Control ID Reader
+# Control ID Reader - Folha de Ponto para Excel
 
-Converte um arquivo PDF de folha de ponto da Control ID em uma planilha Excel formatada.
+Converte um ou múltiplos arquivos PDF de folha de ponto da Control ID em uma única planilha Excel formatada.
 
 ## Funcionalidades
 
-- Extrai dados de funcionários (nome, CPF, PIS, cargo, etc.)
-- Extrai marcações de ponto por dia
-- Gera planilha Excel formatada e pronta para uso
-- Interface simples para seleção de arquivos
+- Lê múltiplos PDFs de uma vez
+- Extrai dados do funcionário (nome, CPF, PIS, cargo, admissão, matrícula, centro de custo, departamento)
+- Extrai marcações de ponto por dia (3 entradas/saídas)
+- Gera planilha Excel única com todos os dias de todos os PDFs
+- Interface gráfica para seleção de arquivos e local de salvamento
+- Nome automático sugerido com quantidade de PDFs e timestamp
 
 ## Como usar
 
@@ -26,8 +28,8 @@ Converte um arquivo PDF de folha de ponto da Control ID em uma planilha Excel fo
    ```bash
    python pdf_para_excel.py
    ```
-4. Selecione o PDF de ponto desejado
-5. Selecione o local onde a planilha será salva
+4. Selecione os PDFs de ponto desejados (pode selecionar um ou múltiplos arquivos)
+5. Escolha o local e nome para salvar a planilha
 
 ## Como criar o executável (.exe)
 
@@ -45,19 +47,22 @@ Opcionalmente, você pode gerar um executável para distribuir:
 # Instale as dependências
 pip install -r requirements.txt
 
-# Gere o executável
+# Gere o executável (Windows)
 python -m PyInstaller --clean --onefile --windowed --name "Control ID Reader" ^
     --collect-all pdfplumber ^
     --collect-all openpyxl ^
     --collect-all pypdfium2 ^
     --collect-all Pillow ^
     pdf_para_excel.py
+
+# Ou usar o script .bat
+./atualizar_exe.bat
 ```
 
 Ou use o arquivo `.spec` incluído:
 
 ```bash
-pyinstaller Control ID Reader.spec
+pyinstaller "Control ID Reader.spec"
 ```
 
 O executável será criado em `dist/Control ID Reader.exe` (~55 MB).
@@ -66,12 +71,13 @@ O executável será criado em `dist/Control ID Reader.exe` (~55 MB).
 
 ```
 pdf_reader/
-├── pdf_para_excel.py      # Script principal
-├── requirements.txt       # Dependências do projeto
-├── README.md              # Este arquivo
-├── criar_exe.bat          # Script para criar o .exe
-├── Control ID Reader.spec # Configuração do PyInstaller
-└── dist/                  # Executável gerado (não versionado)
+├── pdf_para_excel.py         # Script principal
+├── requirements.txt          # Dependências do projeto
+├── README.md                 # Este arquivo
+├── atualizar_exe.bat         # Script para atualizar o .exe
+├── Control ID Reader.spec    # Configuração do PyInstaller
+├── backup.py                 # Script de backup (opcional)
+└── dist/                     # Executável gerado (não versionado)
 ```
 
 ## Problemas conhecidos
