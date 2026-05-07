@@ -10,7 +10,7 @@ pip install -r requirements.txt
 echo.
 echo Gerando executavel com PyInstaller...
 REM Usa python -m para garantir que usa o Python correto
-python -m PyInstaller --clean --onefile --windowed --name "Control ID Reader" --collect-all pdfplumber --collect-all openpyxl --collect-all pypdfium2 --collect-all Pillow pdf_para_excel.py
+python -m PyInstaller --clean --onefile --windowed --name "Control ID Reader" --collect-all pdfplumber --collect-all openpyxl pdf_para_excel.py
 
 echo.
 echo ========================================

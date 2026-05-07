@@ -3,278 +3,575 @@ from pathlib import Path
 from openpyxl import Workbook
 import re
 import tkinter as tk
-from tkinter import filedialog
+from tkinter import ttk, filedialog, messagebox, scrolledtext
 from datetime import datetime
-
-def selecionar_pdfs():
-    """Abre dialog para selecionar múltiplos arquivos PDF"""
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes('-topmost', True)
-    pdf_paths = filedialog.askopenfilenames(
-        title="Selecione os arquivos PDF",
-        filetypes=[("Arquivos PDF", "*.pdf")],
-        initialdir=Path.home() / "Downloads"
-    )
-    root.destroy()
-    return list(pdf_paths)
-
-def selecionar_local_salvar(qtd_pdfs):
-    """Abre dialog para selecionar onde salvar o arquivo Excel"""
-    # Nome sugerido baseado na quantidade de PDFs
-    nome_base = f"Ponto_{qtd_pdfs}PDFs"
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    nome_sugerido = f"{nome_base}_{timestamp}.xlsx"
-
-    # Pasta inicial sugerida (Documentos)
-    documentos = Path.home() / "OneDrive" / "Documentos"
-    if not documentos.exists():
-        documentos = Path.home() / "Documentos"
-
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes('-topmost', True)
-
-    # Abre dialog para salvar arquivo
-    excel_path = filedialog.asksaveasfilename(
-        title="Salvar planilha Excel",
-        defaultextension=".xlsx",
-        initialfile=nome_sugerido,
-        initialdir=documentos,
-        filetypes=[("Arquivos Excel", "*.xlsx")]
-    )
-    root.destroy()
-    return excel_path
-
-# Selecionar múltiplos PDFs
-pdf_paths = selecionar_pdfs()
-if not pdf_paths:
-    print("Nenhum arquivo PDF selecionado.")
-    exit()
-
-print(f"{len(pdf_paths)} arquivo(s) PDF selecionado(s):")
-for path in pdf_paths:
-    print(f"  - {path}")
-
-# Selecionar local para salvar o Excel
-excel_path = selecionar_local_salvar(len(pdf_paths))
-if not excel_path:
-    print("Operação cancelada.")
-    exit()
-
-print(f"Planilha será salva em: {excel_path}")
-
-# Extrair texto completo de todos os PDFs para informações do funcionário
-todos_textos = []
-for pdf_path in pdf_paths:
-    print(f"Processando: {pdf_path}")
-    with pdfplumber.open(pdf_path) as pdf:
-        for pagina in pdf.pages:
-            todos_textos.append(pagina.extract_text() or "")
+import threading
+import json
+import os
 
 
-def get_item(lista, indice):
-    """Acessa índice da lista com segurança, retorna None se fora de alcance"""
-    return lista[indice] if indice < len(lista) else None
+class PdfToExcelApp:
+    """Aplicativo moderno para converter folhas de ponto PDF em Excel."""
 
-def extrair_info_funcionario(texto):
-    """Extrai informações do funcionário a partir do texto de um PDF"""
-    info = {}
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Control ID Reader - Conversor de Ponto")
+        self.root.geometry("780x620")
+        self.root.resizable(False, False)
 
-    # EMPRESA e CNPJ na mesma linha
-    match = re.search(r'EMPRESA:\s*(.+?)\s*CNPJ:\s*(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})', texto, re.IGNORECASE)
-    if match:
-        info["empresa"] = match.group(1).strip()
-        info["cnpj"] = match.group(2).strip()
-    else:
-        match = re.search(r'EMPRESA:\s*([^\n]+)', texto, re.IGNORECASE)
+        # Centralizar janela na tela
+        self.centralizar_janela()
+
+        # Variáveis de estado
+        self.pdf_paths = []
+        self.processamento_ativo = False
+
+        # Diretórios padrão (serão sobrescritos pelas configurações salvas)
+        self.dir_abrir_pdf = str(Path.home() / "Downloads")
+        self.dir_salvar_excel = str(Path.home() / "Documents")
+
+        # Configurar estilo moderno
+        self.configurar_estilo()
+
+        # Criar interface
+        self.criar_interface()
+
+        # Carregar configurações salvas
+        self.carregar_configuracoes()
+
+    def centralizar_janela(self):
+        """Centraliza a janela na tela."""
+        self.root.update_idletasks()
+        largura = self.root.winfo_width()
+        altura = self.root.winfo_height()
+        tela_largura = self.root.winfo_screenwidth()
+        tela_altura = self.root.winfo_screenheight()
+        x = (tela_largura // 2) - (largura // 2)
+        y = (tela_altura // 2) - (altura // 2)
+        self.root.geometry(f"{largura}x{altura}+{x}+{y}")
+
+    def configurar_estilo(self):
+        """Aplica um estilo mais moderno à interface."""
+        style = ttk.Style()
+        style.theme_use('clam')
+
+        # Cores modernas
+        style.configure('TFrame', background='white')
+        style.configure('TLabel', background='white', foreground='#333')
+        style.configure('TButton', background='#4a90d9', foreground='white',
+                       padding=6, font=('Segoe UI', 9))
+        style.map('TButton', background=[('active', '#3a7bc8')])
+
+        # Botão verde — adicionar
+        style.configure('Adicionar.TButton', background='#27ae60', foreground='white',
+                        padding=6, font=('Segoe UI', 9))
+        style.map('Adicionar.TButton', background=[('active', '#1e8449')])
+
+        # Botão laranja — remover selecionados
+        style.configure('Remover.TButton', background='#e67e22', foreground='white',
+                        padding=6, font=('Segoe UI', 9))
+        style.map('Remover.TButton', background=[('active', '#ca6f1e')])
+
+        # Botão vermelho — limpar tudo
+        style.configure('Limpar.TButton', background='#c0392b', foreground='white',
+                        padding=6, font=('Segoe UI', 9))
+        style.map('Limpar.TButton', background=[('active', '#a93226')])
+
+        # Botão azul — ação principal
+        style.configure('Principal.TButton', background='#2980b9', foreground='white',
+                        padding=6, font=('Segoe UI', 9, 'bold'))
+        style.map('Principal.TButton', background=[('active', '#2471a3')])
+
+        # Botão cinza — ação secundária
+        style.configure('Secundario.TButton', background='#7f8c8d', foreground='white',
+                        padding=6, font=('Segoe UI', 9))
+        style.map('Secundario.TButton', background=[('active', '#717d7e')])
+
+        style.configure('Header.TLabel', font=('Segoe UI', 14, 'bold'),
+                       background='white', foreground='#2c3e50')
+        style.configure('Status.TLabel', font=('Segoe UI', 9), foreground='#666')
+        style.configure('Success.TLabel', font=('Segoe UI', 9), foreground='#27ae60')
+        style.configure('Error.TLabel', font=('Segoe UI', 9), foreground='#c0392b')
+        style.configure('LabelFrame', background='white')
+        style.configure('LabelFrame.Label', background='white', foreground='#2c3e50')
+
+        style.configure('Treeview', rowheight=25, font=('Segoe UI', 9))
+        style.configure('Treeview.Heading', font=('Segoe UI', 9, 'bold'))
+
+    def criar_interface(self):
+        """Cria todos os componentes da interface."""
+        # Permitir que o frame principal expanda junto com a janela
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+
+        # Container principal - centralizado
+        main_frame = ttk.Frame(self.root, padding="20")
+        main_frame.grid(row=0, column=0, sticky=(tk.N, tk.S, tk.E, tk.W))
+        main_frame.columnconfigure(0, weight=1)
+
+        # Título
+        ttk.Label(main_frame, text="Control ID Reader", style='Header.TLabel')\
+            .grid(row=0, column=0, pady=(0, 5))
+        ttk.Label(main_frame, text="Conversor de Folhas de Ponto para Excel", foreground='#666')\
+            .grid(row=1, column=0, pady=(0, 50))
+
+        # Seção de seleção de arquivos
+        self.criar_secao_selecao(main_frame, 2)
+
+        # Seção de status/console
+        self.criar_secao_status(main_frame, 3)
+
+        # Seção de ações
+        self.criar_secao_acoes(main_frame, 4)
+    def criar_secao_selecao(self, parent, row):
+        """Cria a seção para seleção de arquivos PDF."""
+        frame = ttk.LabelFrame(parent, text=" Seleção de Arquivos ", padding="12")
+        frame.grid(row=row, column=0, sticky=(tk.W, tk.E), pady=(0, 8))
+        frame.columnconfigure(0, weight=1)
+
+        # Lista de arquivos
+        list_frame = ttk.Frame(frame)
+        list_frame.grid(row=0, column=0, sticky=(tk.W, tk.E))
+        list_frame.columnconfigure(0, weight=1)
+
+        self.lista_arquivos = tk.Listbox(list_frame, height=5, selectmode=tk.EXTENDED,
+                                        font=('Segoe UI', 9))
+        self.lista_arquivos.grid(row=0, column=0, sticky=(tk.W, tk.E))
+
+        # Scrollbar
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL,
+                                  command=self.lista_arquivos.yview)
+        scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        self.lista_arquivos.configure(yscrollcommand=scrollbar.set)
+
+        # Botões de controle
+        btn_frame = ttk.Frame(frame)
+        btn_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
+
+        ttk.Button(btn_frame, text="+ Adicionar PDFs",
+                  command=self.adicionar_pdfs, style='Adicionar.TButton').grid(row=0, column=0, padx=5)
+        ttk.Button(btn_frame, text="❌ Remover Selecionados",
+                  command=self.remover_selecionados, style='Remover.TButton').grid(row=0, column=1, padx=5)
+        ttk.Button(btn_frame, text="🗑️ Limpar Tudo",
+                  command=self.limpar_lista, style='Limpar.TButton').grid(row=0, column=2, padx=5)
+
+        # Info
+        self.info_arquivos = ttk.Label(frame, text="Nenhum arquivo selecionado",
+                                       style='Status.TLabel')
+        self.info_arquivos.grid(row=2, column=0, sticky=tk.W, pady=(5, 0))
+
+    def criar_secao_status(self, parent, row):
+        """Cria a seção de log/status."""
+        frame = ttk.LabelFrame(parent, text=" Log de Processamento ", padding="10")
+        frame.grid(row=row, column=0, sticky=(tk.W, tk.E), pady=(0, 8))
+        frame.columnconfigure(0, weight=1)
+
+        self.log_text = scrolledtext.ScrolledText(frame, height=8, wrap=tk.WORD,
+                                                   font=('Consolas', 8))
+        self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E))
+
+        # Configurar cores de log
+        self.log_text.tag_config('info', foreground='#333')
+        self.log_text.tag_config('success', foreground='#27ae60')
+        self.log_text.tag_config('error', foreground='#c0392b')
+        self.log_text.tag_config('processing', foreground='#f39c12')
+
+    def criar_secao_acoes(self, parent, row):
+        """Cria a seção de botões de ação."""
+        frame = ttk.Frame(parent)
+        frame.grid(row=row, column=0, sticky=(tk.W, tk.E), pady=(5, 0))
+        frame.columnconfigure(0, weight=1)
+
+        # Barra de progresso
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(frame, variable=self.progress_var,
+                                           maximum=100, mode='determinate')
+        self.progress_bar.grid(row=0, column=0, columnspan=3, sticky=(tk.W, tk.E),
+                             pady=(0, 5))
+
+        # Botão de processar
+        btn_processar = ttk.Button(frame, text="Gerar Planilha Excel",
+                                   command=self.iniciar_processamento,
+                                   style='Principal.TButton')
+        btn_processar.grid(row=1, column=0, sticky=tk.W)
+
+        self.btn_processar = btn_processar
+
+        # Botão de salvar configurações
+        ttk.Button(frame, text="Salvar Configurações",
+                  command=self.salvar_configuracoes, style='Secundario.TButton').grid(row=1, column=1, padx=(10, 0))
+
+        self.status_final = ttk.Label(frame, text="", style='Status.TLabel')
+        self.status_final.grid(row=2, column=0, columnspan=3, pady=(5, 0))
+
+    def adicionar_pdfs(self):
+        """Abre dialog para selecionar arquivos PDF."""
+        arquivo_types = [("Arquivos PDF", "*.pdf")]
+        files = filedialog.askopenfilenames(
+            title="Selecionar Arquivos PDF",
+            filetypes=arquivo_types,
+            initialdir=self.dir_abrir_pdf
+        )
+
+        if files:
+            for f in files:
+                if f not in self.pdf_paths:
+                    self.pdf_paths.append(f)
+                    self.lista_arquivos.insert(tk.END, Path(f).name)
+            self.info_arquivos.config(text=f"{len(self.pdf_paths)} arquivo(s) selecionado(s)")
+
+            # Atualizar o último diretório usado
+            self.dir_abrir_pdf = str(Path(files[0]).parent)
+            self.salvar_configuracoes(silencioso=True)
+
+    def remover_selecionados(self):
+        """Remove arquivos selecionados da lista."""
+        indices = self.lista_arquivos.curselection()
+        if not indices:
+            return
+
+        for i in reversed(indices):
+            self.lista_arquivos.delete(i)
+            self.pdf_paths.pop(i)
+
+        self.info_arquivos.config(text=f"{len(self.pdf_paths)} arquivo(s) selecionado(s)")
+
+    def limpar_lista(self):
+        """Limpa todos os arquivos da lista."""
+        self.pdf_paths.clear()
+        self.lista_arquivos.delete(0, tk.END)
+        self.info_arquivos.config(text="Nenhum arquivo selecionado")
+
+    def log(self, mensagem, tipo='info'):
+        """Adiciona mensagem ao log."""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_text.insert(tk.END, f"[{timestamp}] {mensagem}\n", tipo)
+        self.log_text.see(tk.END)
+        self.root.update_idletasks()
+
+    def extrair_info_funcionario(self, texto):
+        """Extrai informações do funcionário a partir do texto de um PDF."""
+        info = {}
+
+        # EMPRESA e CNPJ na mesma linha
+        match = re.search(r'EMPRESA:\s*(.+?)\s*CNPJ:\s*(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})',
+                         texto, re.IGNORECASE)
         if match:
             info["empresa"] = match.group(1).strip()
-        match = re.search(r'CNPJ:\s*(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})', texto, re.IGNORECASE)
+            info["cnpj"] = match.group(2).strip()
+        else:
+            match = re.search(r'EMPRESA:\s*([^\n]+)', texto, re.IGNORECASE)
+            if match:
+                info["empresa"] = match.group(1).strip()
+            match = re.search(r'CNPJ:\s*(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})', texto, re.IGNORECASE)
+            if match:
+                info["cnpj"] = match.group(1).strip()
+
+        # ENDEREÇO
+        match = re.search(r'ENDERE[Ç]O:\s*(.+?)(?:\n|$)', texto, re.IGNORECASE)
         if match:
-            info["cnpj"] = match.group(1).strip()
+            info["endereco"] = match.group(1).strip()
 
-    # ENDEREÇO
-    match = re.search(r'ENDERE[Ç]O:\s*(.+?)(?:\n|$)', texto, re.IGNORECASE)
-    if match:
-        info["endereco"] = match.group(1).strip()
+        # NOME
+        match = re.search(r'NOME:\s*(.+?)\s+PIS/PASEP:', texto, re.IGNORECASE)
+        if match:
+            info["nome"] = match.group(1).strip()
 
-    # NOME (pegar apenas o nome, antes de PIS/PASEP)
-    match = re.search(r'NOME:\s*(.+?)\s+PIS/PASEP:', texto, re.IGNORECASE)
-    if match:
-        info["nome"] = match.group(1).strip()
+        # PIS/PASEP
+        match = re.search(r'PIS/PASEP:\s*(\d+)', texto, re.IGNORECASE)
+        if match:
+            info["pis"] = match.group(1).strip()
 
-    # PIS/PASEP
-    match = re.search(r'PIS/PASEP:\s*(\d+)', texto, re.IGNORECASE)
-    if match:
-        info["pis"] = match.group(1).strip()
+        # ADMISSÃO
+        match = re.search(r'ADMISS[Ã]O:\s*(\d{2}/\d{2}/\d{4})', texto, re.IGNORECASE)
+        if match:
+            info["admissao"] = match.group(1).strip()
 
-    # ADMISSÃO
-    match = re.search(r'ADMISS[Ã]O:\s*(\d{2}/\d{2}/\d{4})', texto, re.IGNORECASE)
-    if match:
-        info["admissao"] = match.group(1).strip()
+        # CPF
+        match = re.search(r'CPF:\s*(\d+)', texto, re.IGNORECASE)
+        if match:
+            info["cpf"] = match.group(1).strip()
 
-    # CPF
-    match = re.search(r'CPF:\s*(\d+)', texto, re.IGNORECASE)
-    if match:
-        info["cpf"] = match.group(1).strip()
+        # MATRÍCULA
+        match = re.search(r'MATR[Í]CULA:\s*(\d+)', texto, re.IGNORECASE)
+        if match:
+            info["matricula"] = match.group(1).strip()
 
-    # MATRÍCULA
-    match = re.search(r'MATR[Í]CULA:\s*(\d+)', texto, re.IGNORECASE)
-    if match:
-        info["matricula"] = match.group(1).strip()
+        # CENTRO DE CUSTO
+        match = re.search(r'CENTRO DE CUSTO:\s*(\S+)', texto, re.IGNORECASE)
+        if match:
+            info["centro_custo"] = match.group(1).strip()
 
-    # CENTRO DE CUSTO
-    match = re.search(r'CENTRO DE CUSTO:\s*(\S+)', texto, re.IGNORECASE)
-    if match:
-        info["centro_custo"] = match.group(1).strip()
+        # DEPARTAMENTO
+        match = re.search(r'DEPARTAMENTO:\s*(\S+)', texto, re.IGNORECASE)
+        if match:
+            info["departamento"] = match.group(1).strip()
 
-    # DEPARTAMENTO
-    match = re.search(r'DEPARTAMENTO:\s*(\S+)', texto, re.IGNORECASE)
-    if match:
-        info["departamento"] = match.group(1).strip()
+        # CARGO
+        match = re.search(r'CARGO:\s*(.+?)(?:\n|$)', texto, re.IGNORECASE)
+        if match:
+            info["cargo"] = match.group(1).strip()
 
-    # CARGO
-    match = re.search(r'CARGO:\s*(.+?)(?:\n|$)', texto, re.IGNORECASE)
-    if match:
-        info["cargo"] = match.group(1).strip()
+        return info
 
-    return info
+    def extrair_dados_ponto(self, tabelas):
+        """Extrai dados de ponto de uma lista de tabelas."""
+        dias = []
+        dia_atual = None
 
-def extrair_dados_ponto(tabelas):
-    """Extrai dados de ponto de uma lista de tabelas, retornando uma lista de dias"""
-    dias = []
-    dia_atual = None
+        for row in tabelas:
+            # Detectar nova linha de dia
+            if row and len(row) > 0 and row[0]:
+                dia_str = str(row[0]).upper()
+                if any(mes in dia_str for mes in ["SEG", "TER", "QUA", "QUI", "SEX", "SAB", "DOM"]):
+                    dia_atual = str(row[0]).strip()
+                    dia = {
+                        "dia": dia_atual,
+                        "marcacoes": "",
+                        "ent1": "", "sai1": "", "ent2": "", "sai2": "",
+                        "ent3": "", "sai3": "", "duracao": "", "ch": ""
+                    }
+                    dias.append(dia)
 
-    for row in tabelas:
-        # Detectar nova linha de dia (formato: DD/MM/YY - DIA)
-        if get_item(row, 0) and any(mes in str(get_item(row, 0)).upper() for mes in ["SEG", "TER", "QUA", "QUI", "SEX", "SAB", "DOM"]):
-            dia_atual = str(get_item(row, 0)).strip()
-            dados_dia = {
-                "dia": dia_atual,
-                "marcacoes": "",
-                "ent1": "", "sai1": "", "ent2": "", "sai2": "", "ent3": "", "sai3": "",
-                "duracao": "", "ch": ""
+            if dia_atual and len(dias) > 0:
+                idx = len(dias) - 1
+                # Marcações
+                if len(row) > 1 and row[1]:
+                    dias[idx]["marcacoes"] = str(row[1]).strip()
+                # Jornada
+                if len(row) > 2 and row[2]:
+                    dias[idx]["ent1"] = str(row[2]).strip()
+                if len(row) > 3 and row[3]:
+                    dias[idx]["sai1"] = str(row[3]).strip()
+                if len(row) > 4 and row[4]:
+                    dias[idx]["ent2"] = str(row[4]).strip()
+                if len(row) > 5 and row[5]:
+                    dias[idx]["sai2"] = str(row[5]).strip()
+                if len(row) > 6 and row[6]:
+                    dias[idx]["ent3"] = str(row[6]).strip()
+                if len(row) > 7 and row[7]:
+                    dias[idx]["sai3"] = str(row[7]).strip()
+                # Duração e CH
+                if len(row) > 8 and row[8]:
+                    dias[idx]["duracao"] = str(row[8]).strip()
+                if len(row) > 9 and row[9]:
+                    dias[idx]["ch"] = str(row[9]).strip()
+
+        return dias
+
+    def processar_pdfs_thread(self):
+        """Thread principal de processamento."""
+        try:
+            if not self.pdf_paths:
+                self.log("Nenhum arquivo PDF para processar.", "error")
+                return
+
+            self.processamento_ativo = True
+            total_pdfs = len(self.pdf_paths)
+            total_dias = 0
+            todos_dias = []
+
+            self.log(f"Iniciando processamento de {total_pdfs} arquivo(s) PDF...", "processing")
+
+            for idx, pdf_path in enumerate(self.pdf_paths):
+                self.log(f"Processando: {Path(pdf_path).name}", "processing")
+
+                try:
+                    # Extrair texto e tabelas
+                    texto_do_pdf = ""
+                    tabelas_do_pdf = []
+
+                    with pdfplumber.open(pdf_path) as pdf:
+                        for pagina in pdf.pages:
+                            texto_do_pdf += pagina.extract_text() or ""
+                            tables = pagina.extract_tables()
+                            for table in tables:
+                                if table:
+                                    tabelas_do_pdf.extend(table)
+
+                    # Extrair informações
+                    info_funcionario = self.extrair_info_funcionario(texto_do_pdf)
+
+                    if not info_funcionario.get("nome"):
+                        self.log(f"  ⚠️ Nenhum funcionário identificado em {Path(pdf_path).name}", "error")
+                        continue
+
+                    # Extrair dados de ponto
+                    dias_do_pdf = self.extrair_dados_ponto(tabelas_do_pdf)
+
+                    # Associar informações do funcionário
+                    for dia in dias_do_pdf:
+                        dia["nome"] = info_funcionario.get("nome", "")
+                        dia["empresa"] = info_funcionario.get("empresa", "")
+                        dia["cpf"] = info_funcionario.get("cpf", "")
+
+                    todos_dias.extend(dias_do_pdf)
+                    total_dias += len(dias_do_pdf)
+
+                    self.log(f"  ✓ {len(dias_do_pdf)} dia(s) extraído(s)", "success")
+
+                except Exception as e:
+                    self.log(f"  ✗ Erro ao processar {Path(pdf_path).name}: {str(e)}", "error")
+
+                # Atualizar progresso
+                progress = ((idx + 1) / total_pdfs) * 100
+                self.progress_var.set(progress)
+                self.root.update_idletasks()
+
+            # Gerar Excel se houver dados
+            if todos_dias:
+                self.salvar_excel(todos_dias)
+                self.log(f"\n✅ Processamento concluído!", "success")
+                self.log(f"Total: {total_pdfs} PDF(s), {total_dias} dia(s) registrado(s)", "success")
+            else:
+                self.log("\n⚠️ Nenhum dado foi extraído dos PDFs.", "error")
+
+        except Exception as e:
+            self.log(f"Erro crítico: {str(e)}", "error")
+        finally:
+            self.processamento_ativo = False
+            self.btn_processar.config(state='normal')
+
+    def salvar_excel(self, dados):
+        """Salva os dados em um arquivo Excel."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        nome_sugerido = f"Ponto_{len(self.pdf_paths)}PDFs_{timestamp}.xlsx"
+
+        excel_path = filedialog.asksaveasfilename(
+            title="Salvar planilha Excel",
+            defaultextension=".xlsx",
+            initialfile=nome_sugerido,
+            initialdir=self.dir_salvar_excel,
+            filetypes=[("Arquivos Excel", "*.xlsx")]
+        )
+
+        if not excel_path:
+            self.log("Operação cancelada pelo usuário.", "info")
+            return
+
+        # Atualizar o último diretório usado para salvar
+        self.dir_salvar_excel = str(Path(excel_path).parent)
+        self.salvar_configuracoes(silencioso=True)
+
+        try:
+            # Criar Excel
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Ponto"
+
+            # Cabeçalhos
+            cabecalhos = [
+                "FUNCIONÁRIO", "DIA", "MARCAÇÕES", "ENT. 1", "SAÍ. 1",
+                "ENT. 2", "SAÍ. 2", "ENT. 3", "SAÍ. 3", "DURAÇÃO", "CH"
+            ]
+            for col, cabecalho in enumerate(cabecalhos, 1):
+                cell = ws.cell(row=1, column=col, value=cabecalho)
+                cell.font = cell.font.copy(bold=True)
+
+            # Dados
+            for row_idx, dia in enumerate(dados, 2):
+                ws.cell(row=row_idx, column=1, value=dia.get("nome", ""))
+                ws.cell(row=row_idx, column=2, value=dia.get("dia", ""))
+                ws.cell(row=row_idx, column=3, value=dia.get("marcacoes", ""))
+                ws.cell(row=row_idx, column=4, value=dia.get("ent1", ""))
+                ws.cell(row=row_idx, column=5, value=dia.get("sai1", ""))
+                ws.cell(row=row_idx, column=6, value=dia.get("ent2", ""))
+                ws.cell(row=row_idx, column=7, value=dia.get("sai2", ""))
+                ws.cell(row=row_idx, column=8, value=dia.get("ent3", ""))
+                ws.cell(row=row_idx, column=9, value=dia.get("sai3", ""))
+                ws.cell(row=row_idx, column=10, value=dia.get("duracao", ""))
+                ws.cell(row=row_idx, column=11, value=dia.get("ch", ""))
+
+            # Ajustar largura
+            larguras = [30, 15, 25, 12, 12, 12, 12, 12, 12, 12, 10]
+            for col, largura in enumerate(larguras, 1):
+                ws.column_dimensions[ws.cell(row=1, column=col).column_letter].width = largura
+
+            wb.save(excel_path)
+            self.log(f"Planilha salva: {excel_path}", "success")
+
+            # Mostrar mensagem de sucesso
+            messagebox.showinfo(
+                "Sucesso",
+                f"Planilha Excel criada com sucesso!\n\n"
+                f"Arquivo: {Path(excel_path).name}\n"
+                f"Local: {Path(excel_path).parent}\n"
+                f"Dias processados: {len(dados)}"
+            )
+
+        except Exception as e:
+            self.log(f"Erro ao salvar Excel: {str(e)}", "error")
+            messagebox.showerror("Erro", f"Não foi possível salvar a planilha:\n{str(e)}")
+
+    def iniciar_processamento(self):
+        """Inicia o processamento em thread separada."""
+        if not self.pdf_paths:
+            messagebox.showwarning("Atenção", "Selecione pelo menos um arquivo PDF.")
+            return
+
+        if self.processamento_ativo:
+            return
+
+        # Confirmar processamento
+        resposta = messagebox.askyesno(
+            "Confirmar Processamento",
+            f"Deseja processar {len(self.pdf_paths)} arquivo(s) PDF?\n\n"
+            "O processo pode levar alguns segundos dependendo do tamanho dos arquivos."
+        )
+
+        if not resposta:
+            return
+
+        self.btn_processar.config(state='disabled')
+        self.log("--- Iniciando processamento ---", "processing")
+        self.progress_var.set(0)
+
+        # Executar em thread
+        thread = threading.Thread(target=self.processar_pdfs_thread, daemon=True)
+        thread.start()
+
+    def carregar_configuracoes(self):
+        """Carrega configurações salvas."""
+        try:
+            config_file = Path(__file__).parent / "config.json"
+            if config_file.exists():
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+                    if content:
+                        config = json.loads(content)
+                        if config.get("dir_abrir_pdf") and Path(config["dir_abrir_pdf"]).exists():
+                            self.dir_abrir_pdf = config["dir_abrir_pdf"]
+                        if config.get("dir_salvar_excel") and Path(config["dir_salvar_excel"]).exists():
+                            self.dir_salvar_excel = config["dir_salvar_excel"]
+        except (json.JSONDecodeError, Exception):
+            pass  # Ignora erros de configuração
+
+    def salvar_configuracoes(self, silencioso=False):
+        """Salva configurações atuais."""
+        try:
+            config = {
+                "dir_abrir_pdf": self.dir_abrir_pdf,
+                "dir_salvar_excel": self.dir_salvar_excel,
+                "data_ultima_execucao": datetime.now().isoformat()
             }
-            dias.append(dados_dia)
-
-        if dia_atual:
-            # Marcações registradas
-            if get_item(row, 1):
-                dias[-1]["marcacoes"] = str(get_item(row, 1)).strip()
-
-            # Jornada realizada
-            if get_item(row, 2):
-                dias[-1]["ent1"] = str(get_item(row, 2)).strip()
-            if get_item(row, 3):
-                dias[-1]["sai1"] = str(get_item(row, 3)).strip()
-            if get_item(row, 4):
-                dias[-1]["ent2"] = str(get_item(row, 4)).strip()
-            if get_item(row, 5):
-                dias[-1]["sai2"] = str(get_item(row, 5)).strip()
-            if get_item(row, 6):
-                dias[-1]["ent3"] = str(get_item(row, 6)).strip()
-            if get_item(row, 7):
-                dias[-1]["sai3"] = str(get_item(row, 7)).strip()
-
-            # Duração e CH
-            if get_item(row, 8):
-                dias[-1]["duracao"] = str(get_item(row, 8)).strip()
-            if get_item(row, 9):
-                dias[-1]["ch"] = str(get_item(row, 9)).strip()
-
-    return dias
-
-# Parse das informações do primeiro PDF para dados gerais (usado apenas como fallback)
-info_geral = extrair_info_funcionario(todos_textos[0]) if todos_textos else {}
-
-# Extrair dados de ponto de todos os PDFs
-# Processar cada PDF separadamente para manter dados únicos
-todos_dias = []
-tabela_atual = 0
-
-for idx, pdf_path in enumerate(pdf_paths):
-    # Extrair texto e informações do funcionário deste PDF
-    texto_do_pdf = ""
-    with pdfplumber.open(pdf_path) as pdf:
-        for pagina in pdf.pages:
-            texto_do_pdf += pagina.extract_text() or ""
-
-    info_funcionario = extrair_info_funcionario(texto_do_pdf)
-
-    # Extrair tabelas apenas deste PDF
-    tabelas_do_pdf = []
-    with pdfplumber.open(pdf_path) as pdf:
-        for pagina in pdf.pages:
-            tables = pagina.extract_tables()
-            for table in tables:
-                if table:
-                    tabelas_do_pdf.extend(table)
-
-    # Extrair dias deste PDF e associar às informações do funcionário
-    dias_do_pdf = extrair_dados_ponto(tabelas_do_pdf)
-
-    # Adicionar informações do funcionário a cada dia
-    for dia in dias_do_pdf:
-        dia["nome"] = info_funcionario.get("nome", "")
-        dia["empresa"] = info_funcionario.get("empresa", "")
-        dia["cpf"] = info_funcionario.get("cpf", "")
-
-    todos_dias.extend(dias_do_pdf)
-    print(f"  -> {len(dias_do_pdf)} dias extraídos de {Path(pdf_path).name}")
-
-dados_ponto = todos_dias
-
-# Criar Excel formatado
-wb = Workbook()
-ws = wb.active
-ws.title = "Ponto"
-
-linha_atual = 1
-
-# Cabeçalhos da tabela de ponto - todos na mesma linha
-ws.cell(row=linha_atual, column=1, value="FUNCIONÁRIO")
-ws.cell(row=linha_atual, column=2, value="DIA")
-ws.cell(row=linha_atual, column=3, value="MARCAÇÕES REGISTRADAS\nNO PONTO ELETRÔNICO")
-ws.cell(row=linha_atual, column=4, value="ENT. 1")
-ws.cell(row=linha_atual, column=5, value="SAÍ. 1")
-ws.cell(row=linha_atual, column=6, value="ENT. 2")
-ws.cell(row=linha_atual, column=7, value="SAÍ. 2")
-ws.cell(row=linha_atual, column=8, value="ENT. 3")
-ws.cell(row=linha_atual, column=9, value="SAÍ. 3")
-ws.cell(row=linha_atual, column=10, value="DURAÇÃO")
-ws.cell(row=linha_atual, column=11, value="CH")
-linha_atual += 1
+            config_file = Path(__file__).parent / "config.json"
+            with open(config_file, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+            if not silencioso:
+                self.log("Configurações salvas com sucesso.", "success")
+                messagebox.showinfo("Sucesso", "Configurações salvas!")
+        except Exception as e:
+            self.log(f"Erro ao salvar configurações: {e}", "error")
+            if not silencioso:
+                messagebox.showerror("Erro", f"Não foi possível salvar configurações:\n{str(e)}")
 
 
-# Dados de cada dia
-for dia_dados in dados_ponto:
-    ws.cell(row=linha_atual, column=1, value=dia_dados.get("nome", ""))
-    ws.cell(row=linha_atual, column=2, value=dia_dados["dia"])
-    ws.cell(row=linha_atual, column=3, value=dia_dados["marcacoes"])
-    ws.cell(row=linha_atual, column=4, value=dia_dados["ent1"])
-    ws.cell(row=linha_atual, column=5, value=dia_dados["sai1"])
-    ws.cell(row=linha_atual, column=6, value=dia_dados["ent2"])
-    ws.cell(row=linha_atual, column=7, value=dia_dados["sai2"])
-    ws.cell(row=linha_atual, column=8, value=dia_dados["ent3"])
-    ws.cell(row=linha_atual, column=9, value=dia_dados["sai3"])
-    ws.cell(row=linha_atual, column=10, value=dia_dados["duracao"])
-    ws.cell(row=linha_atual, column=11, value=dia_dados["ch"])
-    linha_atual += 1
+def main():
+    """Função principal."""
+    root = tk.Tk()
+    app = PdfToExcelApp(root)
+    root.mainloop()
 
-# Ajustar largura das colunas
-for col in ws.columns:
-    max_length = 0
-    column = col[0].column_letter
-    for cell in col:
-        if cell.value:
-            max_length = max(max_length, len(str(cell.value)))
-    ws.column_dimensions[column].width = min(max_length + 2, 30)
 
-wb.save(excel_path)
-print(f"\nPlanilha criada com sucesso: {excel_path}")
-print(f"Total de PDFs processados: {len(pdf_paths)}")
-print(f"Total de dias registrados: {len(dados_ponto)}")
-print("\nInformações extraídas (do primeiro PDF):")
-for k, v in info_geral.items():
-    print(f"  {k}: {v}")
+if __name__ == "__main__":
+    main()
