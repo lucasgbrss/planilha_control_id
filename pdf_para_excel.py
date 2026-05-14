@@ -19,6 +19,9 @@ class PdfToExcelApp:
         self.root.geometry("780x620")
         self.root.resizable(False, False)
 
+        # Aplicar ícone da janela
+        self._aplicar_icone()
+
         # Centralizar janela na tela
         self.centralizar_janela()
 
@@ -38,6 +41,15 @@ class PdfToExcelApp:
 
         # Carregar configurações salvas
         self.carregar_configuracoes()
+
+    def _aplicar_icone(self):
+        """Aplica o ícone da janela a partir do arquivo .ico na pasta do script."""
+        try:
+            ico_path = Path(__file__).parent / "control_id_reader.ico"
+            if ico_path.exists():
+                self.root.iconbitmap(str(ico_path))
+        except Exception:
+            pass  # Silencioso — ícone é cosmético, não deve travar o app
 
     def centralizar_janela(self):
         """Centraliza a janela na tela."""
@@ -113,7 +125,7 @@ class PdfToExcelApp:
         ttk.Label(main_frame, text="Control ID Reader", style='Header.TLabel')\
             .grid(row=0, column=0, pady=(0, 5))
         ttk.Label(main_frame, text="Conversor de Folhas de Ponto para Excel", foreground='#666')\
-            .grid(row=1, column=0, pady=(0, 50))
+            .grid(row=1, column=0, pady=(0, 15))
 
         # Seção de seleção de arquivos
         self.criar_secao_selecao(main_frame, 2)
@@ -243,15 +255,35 @@ class PdfToExcelApp:
         self.info_arquivos.config(text="Nenhum arquivo selecionado")
 
     def log(self, mensagem, tipo='info'):
-        """Adiciona mensagem ao log."""
+        """Adiciona mensagem ao log de forma thread-safe via root.after."""
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self.log_text.insert(tk.END, f"[{timestamp}] {mensagem}\n", tipo)
-        self.log_text.see(tk.END)
-        self.root.update_idletasks()
+        def _inserir():
+            self.log_text.insert(tk.END, f"[{timestamp}] {mensagem}\n", tipo)
+            self.log_text.see(tk.END)
+        self.root.after(0, _inserir)
+
+    def _atualizar_progresso(self, valor):
+        """Atualiza a barra de progresso de forma thread-safe."""
+        self.root.after(0, lambda: self.progress_var.set(valor))
+
+    def _finalizar_processamento(self, todos_dias, total_pdfs, total_dias):
+        """Chamado na thread principal ao fim do processamento para abrir o filedialog."""
+        self.processamento_ativo = False
+        self.btn_processar.config(state='normal')
+        if todos_dias:
+            self.salvar_excel(todos_dias)
+            self.log(f"\n✅ Processamento concluído!", "success")
+            self.log(f"Total: {total_pdfs} PDF(s), {total_dias} dia(s) registrado(s)", "success")
+        else:
+            self.log("\n⚠️ Nenhum dado foi extraído dos PDFs.", "error")
 
     def extrair_info_funcionario(self, texto):
-        """Extrai informações do funcionário a partir do texto de um PDF."""
+        """Extrai informações do funcionário a partir do texto de um PDF.
+        Retorna (dict, motivo_falha). motivo_falha é None em caso de sucesso."""
         info = {}
+
+        if not texto or not texto.strip():
+            return info, "texto do PDF está vazio"
 
         # EMPRESA e CNPJ na mesma linha
         match = re.search(r'EMPRESA:\s*(.+?)\s*CNPJ:\s*(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})',
@@ -312,7 +344,19 @@ class PdfToExcelApp:
         if match:
             info["cargo"] = match.group(1).strip()
 
-        return info
+        # Fix 6: retornar motivo específico se nome não foi encontrado
+        if not info.get("nome"):
+            tem_empresa = "empresa" in info
+            tem_cpf     = "cpf" in info
+            if not tem_empresa and not tem_cpf:
+                motivo = "nenhum campo reconhecido — formato do PDF pode ser diferente do esperado"
+            elif tem_empresa and not tem_cpf:
+                motivo = "empresa identificada mas campo NOME não encontrado no padrão 'NOME: ... PIS/PASEP:'"
+            else:
+                motivo = "campo NOME não encontrado no padrão esperado"
+            return info, motivo
+
+        return info, None
 
     def extrair_dados_ponto(self, tabelas):
         """Extrai dados de ponto de uma lista de tabelas."""
@@ -361,27 +405,38 @@ class PdfToExcelApp:
 
     def processar_pdfs_thread(self):
         """Thread principal de processamento."""
+        # Fix 7: flag ativado antes do try para garantir consistência com o botão desabilitado
+        self.processamento_ativo = True
+        total_pdfs = len(self.pdf_paths)
+        total_dias = 0
+        todos_dias = []
+
         try:
-            if not self.pdf_paths:
-                self.log("Nenhum arquivo PDF para processar.", "error")
-                return
-
-            self.processamento_ativo = True
-            total_pdfs = len(self.pdf_paths)
-            total_dias = 0
-            todos_dias = []
-
             self.log(f"Iniciando processamento de {total_pdfs} arquivo(s) PDF...", "processing")
 
             for idx, pdf_path in enumerate(self.pdf_paths):
-                self.log(f"Processando: {Path(pdf_path).name}", "processing")
+                nome_arquivo = Path(pdf_path).name
+                self.log(f"Processando: {nome_arquivo}", "processing")
 
                 try:
-                    # Extrair texto e tabelas
+                    # Fix 3: verificar se o arquivo ainda existe antes de abrir
+                    if not Path(pdf_path).exists():
+                        self.log(f"  ✗ Arquivo não encontrado: {nome_arquivo}", "error")
+                        continue
+
                     texto_do_pdf = ""
                     tabelas_do_pdf = []
 
-                    with pdfplumber.open(pdf_path) as pdf:
+                    try:
+                        pdf_aberto = pdfplumber.open(pdf_path)
+                    except Exception:
+                        # Fix 4: PDF protegido por senha ou corrompido
+                        self.log(f"  ✗ Não foi possível abrir '{nome_arquivo}'. "
+                                 f"O arquivo pode estar protegido por senha ou corrompido.", "error")
+                        continue
+
+                    with pdf_aberto as pdf:
+                        # Fix 4: detectar PDF sem texto (possível senha ou só imagens)
                         for pagina in pdf.pages:
                             texto_do_pdf += pagina.extract_text() or ""
                             tables = pagina.extract_tables()
@@ -389,48 +444,48 @@ class PdfToExcelApp:
                                 if table:
                                     tabelas_do_pdf.extend(table)
 
-                    # Extrair informações
-                    info_funcionario = self.extrair_info_funcionario(texto_do_pdf)
-
-                    if not info_funcionario.get("nome"):
-                        self.log(f"  ⚠️ Nenhum funcionário identificado em {Path(pdf_path).name}", "error")
+                    if not texto_do_pdf.strip():
+                        self.log(f"  ✗ '{nome_arquivo}' não contém texto extraível. "
+                                 f"Pode estar protegido por senha ou ser um PDF digitalizado (imagem).", "error")
                         continue
 
-                    # Extrair dados de ponto
+                    # Extrair informações do funcionário
+                    info_funcionario, motivo_falha = self.extrair_info_funcionario(texto_do_pdf)
+
+                    if not info_funcionario.get("nome"):
+                        # Fix 6: log com motivo específico da falha
+                        self.log(f"  ⚠️ Nenhum funcionário identificado em '{nome_arquivo}'. "
+                                 f"Motivo: {motivo_falha}", "error")
+                        continue
+
                     dias_do_pdf = self.extrair_dados_ponto(tabelas_do_pdf)
 
-                    # Associar informações do funcionário
                     for dia in dias_do_pdf:
-                        dia["nome"] = info_funcionario.get("nome", "")
+                        dia["nome"]    = info_funcionario.get("nome", "")
                         dia["empresa"] = info_funcionario.get("empresa", "")
-                        dia["cpf"] = info_funcionario.get("cpf", "")
+                        dia["cpf"]     = info_funcionario.get("cpf", "")
 
                     todos_dias.extend(dias_do_pdf)
                     total_dias += len(dias_do_pdf)
-
                     self.log(f"  ✓ {len(dias_do_pdf)} dia(s) extraído(s)", "success")
 
+                except PermissionError:
+                    self.log(f"  ✗ Sem permissão para ler '{nome_arquivo}'. "
+                             f"Verifique se o arquivo está aberto em outro programa.", "error")
+                except MemoryError:
+                    self.log(f"  ✗ Memória insuficiente ao processar '{nome_arquivo}'. "
+                             f"Tente processar menos arquivos por vez.", "error")
                 except Exception as e:
-                    self.log(f"  ✗ Erro ao processar {Path(pdf_path).name}: {str(e)}", "error")
+                    self.log(f"  ✗ Erro inesperado em '{nome_arquivo}': {str(e)}", "error")
 
-                # Atualizar progresso
-                progress = ((idx + 1) / total_pdfs) * 100
-                self.progress_var.set(progress)
-                self.root.update_idletasks()
-
-            # Gerar Excel se houver dados
-            if todos_dias:
-                self.salvar_excel(todos_dias)
-                self.log(f"\n✅ Processamento concluído!", "success")
-                self.log(f"Total: {total_pdfs} PDF(s), {total_dias} dia(s) registrado(s)", "success")
-            else:
-                self.log("\n⚠️ Nenhum dado foi extraído dos PDFs.", "error")
+                # Fix 2: atualizar progresso via root.after
+                self._atualizar_progresso(((idx + 1) / total_pdfs) * 100)
 
         except Exception as e:
-            self.log(f"Erro crítico: {str(e)}", "error")
+            self.log(f"Erro crítico no processamento: {str(e)}", "error")
         finally:
-            self.processamento_ativo = False
-            self.btn_processar.config(state='normal')
+            # Fix 1: devolver controle à thread principal para abrir o filedialog
+            self.root.after(0, lambda: self._finalizar_processamento(todos_dias, total_pdfs, total_dias))
 
     def salvar_excel(self, dados):
         """Salva os dados em um arquivo Excel."""
@@ -543,8 +598,8 @@ class PdfToExcelApp:
                             self.dir_abrir_pdf = config["dir_abrir_pdf"]
                         if config.get("dir_salvar_excel") and Path(config["dir_salvar_excel"]).exists():
                             self.dir_salvar_excel = config["dir_salvar_excel"]
-        except (json.JSONDecodeError, Exception):
-            pass  # Ignora erros de configuração
+        except Exception:
+            pass  # Ignora erros de configuração — defaults já estão definidos no __init__
 
     def salvar_configuracoes(self, silencioso=False):
         """Salva configurações atuais."""
