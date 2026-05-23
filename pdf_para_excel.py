@@ -1,4 +1,6 @@
+import email as email_lib
 import pdfplumber
+from bs4 import BeautifulSoup
 from pathlib import Path
 from openpyxl import Workbook
 import re
@@ -11,7 +13,7 @@ import os
 
 
 class PdfToExcelApp:
-    """Aplicativo moderno para converter folhas de ponto PDF em Excel."""
+    """Aplicativo moderno para converter folhas de ponto em Excel."""
 
     def __init__(self, root):
         self.root = root
@@ -136,7 +138,7 @@ class PdfToExcelApp:
         # Seção de ações
         self.criar_secao_acoes(main_frame, 4)
     def criar_secao_selecao(self, parent, row):
-        """Cria a seção para seleção de arquivos PDF."""
+        """Cria a seção para seleção de arquivos."""
         frame = ttk.LabelFrame(parent, text=" Seleção de Arquivos ", padding="12")
         frame.grid(row=row, column=0, sticky=(tk.W, tk.E), pady=(0, 8))
         frame.columnconfigure(0, weight=1)
@@ -160,7 +162,7 @@ class PdfToExcelApp:
         btn_frame = ttk.Frame(frame)
         btn_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
 
-        ttk.Button(btn_frame, text="+ Adicionar PDFs",
+        ttk.Button(btn_frame, text="+ Adicionar Arquivos",
                   command=self.adicionar_pdfs, style='Adicionar.TButton').grid(row=0, column=0, padx=5)
         ttk.Button(btn_frame, text="❌ Remover Selecionados",
                   command=self.remover_selecionados, style='Remover.TButton').grid(row=0, column=1, padx=5)
@@ -217,10 +219,14 @@ class PdfToExcelApp:
         self.status_final.grid(row=2, column=0, columnspan=3, pady=(5, 0))
 
     def adicionar_pdfs(self):
-        """Abre dialog para selecionar arquivos PDF."""
-        arquivo_types = [("Arquivos PDF", "*.pdf")]
+        """Abre dialog para selecionar arquivos PDF ou MHTML."""
+        arquivo_types = [
+            ("Arquivos suportados", "*.pdf *.mhtml"),
+            ("Arquivos PDF", "*.pdf"),
+            ("Arquivos MHTML", "*.mhtml"),
+        ]
         files = filedialog.askopenfilenames(
-            title="Selecionar Arquivos PDF",
+            title="Selecionar Arquivos PDF ou MHTML",
             filetypes=arquivo_types,
             initialdir=self.dir_abrir_pdf
         )
@@ -273,17 +279,17 @@ class PdfToExcelApp:
         if todos_dias:
             self.salvar_excel(todos_dias)
             self.log(f"\n✅ Processamento concluído!", "success")
-            self.log(f"Total: {total_pdfs} PDF(s), {total_dias} dia(s) registrado(s)", "success")
+            self.log(f"Total: {total_pdfs} arquivo(s), {total_dias} dia(s) registrado(s)", "success")
         else:
-            self.log("\n⚠️ Nenhum dado foi extraído dos PDFs.", "error")
+            self.log("\n⚠️ Nenhum dado foi extraído dos arquivos.", "error")
 
     def extrair_info_funcionario(self, texto):
-        """Extrai informações do funcionário a partir do texto de um PDF.
+        """Extrai informações do funcionário a partir do texto de um arquivo.
         Retorna (dict, motivo_falha). motivo_falha é None em caso de sucesso."""
         info = {}
 
         if not texto or not texto.strip():
-            return info, "texto do PDF está vazio"
+            return info, "texto do arquivo está vazio"
 
         # EMPRESA e CNPJ na mesma linha
         match = re.search(r'EMPRESA:\s*(.+?)\s*CNPJ:\s*(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})',
@@ -349,7 +355,7 @@ class PdfToExcelApp:
             tem_empresa = "empresa" in info
             tem_cpf     = "cpf" in info
             if not tem_empresa and not tem_cpf:
-                motivo = "nenhum campo reconhecido — formato do PDF pode ser diferente do esperado"
+                motivo = "nenhum campo reconhecido — formato do arquivo pode ser diferente do esperado"
             elif tem_empresa and not tem_cpf:
                 motivo = "empresa identificada mas campo NOME não encontrado no padrão 'NOME: ... PIS/PASEP:'"
             else:
@@ -403,6 +409,128 @@ class PdfToExcelApp:
 
         return dias
 
+    # ──────────────────────────────────────────────
+    # Extração MHTML
+    # ──────────────────────────────────────────────
+
+    def extrair_html_de_mhtml(self, caminho):
+        """Abre um arquivo .mhtml e retorna o conteúdo HTML interno como string."""
+        with open(caminho, "rb") as f:
+            msg = email_lib.message_from_bytes(f.read())
+        for part in msg.walk():
+            if "html" in part.get_content_type():
+                payload = part.get_payload(decode=True)
+                charset = part.get_content_charset() or "utf-8"
+                return payload.decode(charset, errors="replace")
+        return None
+
+    def extrair_info_funcionario_mhtml(self, soup):
+        """Extrai dados do funcionário a partir do HTML parseado.
+        Retorna (dict, motivo_falha). Células têm formato 'CAMPO:Valor'."""
+        info = {}
+
+        campo_map_lower = {
+            "empresa"        : "empresa",
+            "cnpj"           : "cnpj",
+            "cei"            : "cei",
+            "endereço"       : "endereco",
+            "nome"           : "nome",
+            "pis/pasep"      : "pis",
+            "admissão"       : "admissao",
+            "centro de custo": "centro_custo",
+            "cpf"            : "cpf",
+            "matrícula"      : "matricula",
+            "departamento"   : "departamento",
+            "cargo"          : "cargo",
+        }
+
+        for td in soup.find_all(["td", "th"]):
+            texto = td.get_text(separator=" ", strip=True)
+            if ":" not in texto:
+                continue
+            chave, _, valor = texto.partition(":")
+            chave_norm = chave.strip().lower()
+            valor = valor.strip()
+            if chave_norm in campo_map_lower and valor:
+                info[campo_map_lower[chave_norm]] = valor
+
+        if not info.get("nome"):
+            tem_empresa = "empresa" in info
+            if not tem_empresa:
+                motivo = "nenhum campo reconhecido — estrutura do MHTML diferente do esperado"
+            else:
+                motivo = "empresa identificada mas campo NOME não encontrado"
+            return info, motivo
+
+        return info, None
+
+    def extrair_dados_ponto_mhtml(self, soup):
+        """Extrai registros de ponto da tabela HTML.
+        Cada linha-mestre tem 17 células: [0]=data, [3]=ENT1, [4]=SAÍ1,
+        [5]=ENT2, [6]=SAÍ2. Linhas de detalhe (3 células) são ignoradas."""
+        dias = []
+        tables = soup.find_all("table")
+
+        tabela_ponto = None
+        for table in tables:
+            primeira = table.find("tr")
+            if primeira and "DIA" in primeira.get_text():
+                tabela_ponto = table
+                break
+
+        if not tabela_ponto:
+            return dias
+
+        data_re = re.compile(r"(\d{2}/\d{2}/\d{2,4})")
+
+        for tr in tabela_ponto.find_all("tr"):
+            cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
+
+            if len(cells) < 17:
+                continue
+            m = data_re.match(cells[0])
+            if not m:
+                continue
+
+            data_raw  = cells[0]
+            data_part = m.group(1)
+
+            try:
+                from datetime import datetime as dt
+                fmt = "%d/%m/%y" if len(data_part.split("/")[2]) == 2 else "%d/%m/%Y"
+                data_fmt = dt.strptime(data_part, fmt).strftime("%d/%m/%Y")
+            except ValueError:
+                data_fmt = data_part
+
+            dia_semana = data_raw.split("-")[-1].strip() if "-" in data_raw else ""
+
+            ent1    = cells[3].strip()
+            sai1    = cells[4].strip()
+            ent2    = cells[5].strip()
+            sai2    = cells[6].strip()
+            duracao = cells[10].strip() if len(cells) > 10 else ""
+            ch      = cells[12].strip() if len(cells) > 12 else ""
+
+            # "marcacoes" = resumo visual das batidas (ex: "07:23 14:27")
+            marcacoes = f"{ent1} {sai1}".strip() if ent1 or sai1 else ""
+
+            dias.append({
+                "dia"     : f"{data_fmt} - {dia_semana}",
+                "marcacoes": marcacoes,
+                "ent1"    : ent1,
+                "sai1"    : sai1,
+                "ent2"    : ent2,
+                "sai2"    : sai2,
+                "ent3"    : "",
+                "sai3"    : "",
+                "duracao" : duracao,
+                "ch"      : ch,
+            })
+
+        return dias
+
+    # ──────────────────────────────────────────────
+
     def processar_pdfs_thread(self):
         """Thread principal de processamento."""
         # Fix 7: flag ativado antes do try para garantir consistência com o botão desabilitado
@@ -412,7 +540,7 @@ class PdfToExcelApp:
         todos_dias = []
 
         try:
-            self.log(f"Iniciando processamento de {total_pdfs} arquivo(s) PDF...", "processing")
+            self.log(f"Iniciando processamento de {total_pdfs} arquivo(s)...", "processing")
 
             for idx, pdf_path in enumerate(self.pdf_paths):
                 nome_arquivo = Path(pdf_path).name
@@ -424,41 +552,58 @@ class PdfToExcelApp:
                         self.log(f"  ✗ Arquivo não encontrado: {nome_arquivo}", "error")
                         continue
 
-                    texto_do_pdf = ""
-                    tabelas_do_pdf = []
+                    ext = Path(pdf_path).suffix.lower()
 
-                    try:
-                        pdf_aberto = pdfplumber.open(pdf_path)
-                    except Exception:
-                        # Fix 4: PDF protegido por senha ou corrompido
-                        self.log(f"  ✗ Não foi possível abrir '{nome_arquivo}'. "
-                                 f"O arquivo pode estar protegido por senha ou corrompido.", "error")
-                        continue
+                    if ext == ".mhtml":
+                        # ── Fluxo MHTML ──────────────────────────────
+                        html_str = self.extrair_html_de_mhtml(pdf_path)
+                        if not html_str:
+                            self.log(f"  ✗ Não foi possível extrair HTML de '{nome_arquivo}'.", "error")
+                            continue
 
-                    with pdf_aberto as pdf:
-                        # Fix 4: detectar PDF sem texto (possível senha ou só imagens)
-                        for pagina in pdf.pages:
-                            texto_do_pdf += pagina.extract_text() or ""
-                            tables = pagina.extract_tables()
-                            for table in tables:
-                                if table:
-                                    tabelas_do_pdf.extend(table)
+                        soup = BeautifulSoup(html_str, "html.parser")
+                        info_funcionario, motivo_falha = self.extrair_info_funcionario_mhtml(soup)
 
-                    if not texto_do_pdf.strip():
-                        self.log(f"  ✗ '{nome_arquivo}' não contém texto extraível. "
-                                 f"Pode estar protegido por senha ou ser um PDF digitalizado (imagem).", "error")
-                        continue
+                        if not info_funcionario.get("nome"):
+                            self.log(f"  ⚠️ Nenhum funcionário identificado em '{nome_arquivo}'. "
+                                     f"Motivo: {motivo_falha}", "error")
+                            continue
 
-                    # Extrair informações do funcionário
-                    info_funcionario, motivo_falha = self.extrair_info_funcionario(texto_do_pdf)
+                        dias_do_pdf = self.extrair_dados_ponto_mhtml(soup)
 
-                    if not info_funcionario.get("nome"):
-                        # Fix 6: log com motivo específico da falha
-                        self.log(f"  ⚠️ Nenhum funcionário identificado em '{nome_arquivo}'. "
-                                 f"Motivo: {motivo_falha}", "error")
-                        continue
+                    else:
+                        # ── Fluxo PDF ────────────────────────────────
+                        texto_do_pdf  = ""
+                        tabelas_do_pdf = []
 
-                    dias_do_pdf = self.extrair_dados_ponto(tabelas_do_pdf)
+                        try:
+                            pdf_aberto = pdfplumber.open(pdf_path)
+                        except Exception:
+                            self.log(f"  ✗ Não foi possível abrir '{nome_arquivo}'. "
+                                     f"O arquivo pode estar protegido por senha ou corrompido.", "error")
+                            continue
+
+                        with pdf_aberto as pdf:
+                            for pagina in pdf.pages:
+                                texto_do_pdf += pagina.extract_text() or ""
+                                tables = pagina.extract_tables()
+                                for table in tables:
+                                    if table:
+                                        tabelas_do_pdf.extend(table)
+
+                        if not texto_do_pdf.strip():
+                            self.log(f"  ✗ '{nome_arquivo}' não contém texto extraível. "
+                                     f"Pode estar protegido por senha ou ser um PDF digitalizado (imagem).", "error")
+                            continue
+
+                        info_funcionario, motivo_falha = self.extrair_info_funcionario(texto_do_pdf)
+
+                        if not info_funcionario.get("nome"):
+                            self.log(f"  ⚠️ Nenhum funcionário identificado em '{nome_arquivo}'. "
+                                     f"Motivo: {motivo_falha}", "error")
+                            continue
+
+                        dias_do_pdf = self.extrair_dados_ponto(tabelas_do_pdf)
 
                     for dia in dias_do_pdf:
                         dia["nome"]    = info_funcionario.get("nome", "")
@@ -561,7 +706,7 @@ class PdfToExcelApp:
     def iniciar_processamento(self):
         """Inicia o processamento em thread separada."""
         if not self.pdf_paths:
-            messagebox.showwarning("Atenção", "Selecione pelo menos um arquivo PDF.")
+            messagebox.showwarning("Atenção", "Selecione pelo menos um arquivo.")
             return
 
         if self.processamento_ativo:
