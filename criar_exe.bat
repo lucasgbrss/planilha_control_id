@@ -13,6 +13,7 @@ python -m PyInstaller --clean --onefile --windowed --name "Control ID Reader" ^
     --collect-all pdfplumber ^
     --collect-all openpyxl ^
     --collect-all bs4 ^
+    --collect-all customtkinter ^
     --icon "control_id_reader.ico" ^
     --add-data "control_id_reader.ico;." ^
     pdf_para_excel.py

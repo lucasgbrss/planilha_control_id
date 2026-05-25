@@ -1,26 +1,27 @@
 # Control ID Reader - Folha de Ponto para Excel
 
-Converte um ou múltiplos arquivos PDF de folha de ponto da Control ID em uma única planilha Excel formatada.
+Converte um ou múltiplos arquivos de folha de ponto (PDF ou MHTML) da Control ID em uma única planilha Excel formatada.
 
 ## Funcionalidades
 
-- ✅ Processa um ou múltiplos PDFs simultaneamente
-- ✅ Interface gráfica moderna, centralizada e responsiva
+- ✅ Processa um ou múltiplos arquivos simultaneamente (PDF e MHTML)
+- ✅ Interface moderna com CustomTkinter — cantos arredondados, tipografia limpa
+- ✅ Tema Dark/Light alternável com botão dedicado
 - ✅ Botões com cores intuitivas (verde/laranja/vermelho/azul)
 - ✅ Seleção de arquivos com preview visual
-- ✅ Log de processamento em tempo real
+- ✅ Log de processamento em tempo real com cores por tipo de mensagem
 - ✅ Barra de progresso visual
 - ✅ Extrai dados do funcionário (nome, CPF, PIS, cargo, admissão, matrícula, centro de custo, departamento)
-- ✅ Extrai marcações de ponto por dia (3 entradas/saídas)
+- ✅ Extrai marcações de ponto por dia (até 3 entradas/saídas) e duração
 - ✅ Gera planilha Excel formatada com colunas ajustadas
-- ✅ Memoriza separadamente o último diretório usado para abrir PDFs e para salvar Excel
+- ✅ Memoriza separadamente o último diretório usado para abrir arquivos e para salvar Excel
+- ✅ Salva tema (dark/light) entre sessões
 
 ## Como usar
 
 ### Pré-requisitos
 
 - Python 3.8 ou superior instalado (https://python.org)
-- **Observação:** `tkinter` já vem incluído com Python (não requer instalação separada)
 
 ### Passos
 
@@ -36,10 +37,10 @@ Converte um ou múltiplos arquivos PDF de folha de ponto da Control ID em uma ú
    ou duplo-clique no arquivo no Explorer (Windows)
 
 4. **Interface aberta:**
-   - Clique em **"+ Adicionar PDFs"** para selecionar arquivos (pode selecionar múltiplos)
-   - Use **"❌ Remover Selecionados"** para remover apenas os arquivos marcados na lista
-   - Use **"🗑️ Limpar Tudo"** para limpar a lista inteira de uma vez
-   - Clique em **"Gerar Planilha Excel"** para processar
+   - Clique em **"+ Adicionar Arquivos"** para selecionar PDFs ou MHTMLs (pode selecionar múltiplos)
+   - Use **"✕ Remover Selecionados"** para remover apenas os arquivos marcados na lista
+   - Use **"🗑 Limpar Tudo"** para limpar a lista inteira de uma vez
+   - Clique em **"⚡ Gerar Planilha Excel"** para processar
 
 5. Escolha o local e nome para salvar a planilha
 
@@ -47,22 +48,35 @@ Converte um ou múltiplos arquivos PDF de folha de ponto da Control ID em uma ú
 
 ## Configurações salvas automaticamente
 
-O arquivo `config.json` é gerado automaticamente na pasta do projeto e guarda:
+O arquivo `config.json` é gerado automaticamente em `%APPDATA%\ControlIDReader\` e guarda:
 
 ```json
 {
   "dir_abrir_pdf": "C:/Users/Fulano/Downloads",
   "dir_salvar_excel": "C:/Users/Fulano/Documents",
+  "tema": "dark",
   "data_ultima_execucao": "2025-01-15T14:32:00"
 }
 ```
 
-Na próxima execução, os diálogos de abrir e salvar já abrem nas últimas pastas usadas.
-O botão **"Salvar Configurações"** permite forçar o salvamento manualmente com confirmação visual.
+As configurações são salvas automaticamente sempre que você abre ou salva um arquivo. Na próxima execução, os diálogos já abrem nas últimas pastas usadas e o tema é restaurado.
+
+> O caminho completo no Windows é `C:\Users\<seu_usuario>\AppData\Roaming\ControlIDReader\config.json`.
+
+O botão **"💾 Salvar Configurações"** permite forçar o salvamento manualmente com confirmação visual.
+
+## Formatos suportados
+
+| Formato | Observação |
+|---|---|
+| `.pdf` | Folha de ponto exportada diretamente pelo sistema |
+| `.mhtml` | Salvo pelo navegador via "Salvar página como → Página da Web, Completa (*.mhtml)" |
+
+> **Atenção:** arquivos `.html` simples geralmente não contêm dados (o conteúdo é carregado dinamicamente). Use sempre `.mhtml`.
 
 ## Como criar o executável (.exe)
 
-Opcionalmente, você pode gerar um executável para distribuir:
+Opcionalmente, você pode gerar um executável para distribuir sem precisar do Python instalado:
 
 ### Usando o script automático (Windows)
 
@@ -80,6 +94,10 @@ pip install -r requirements.txt
 python -m PyInstaller --clean --onefile --windowed --name "Control ID Reader" ^
     --collect-all pdfplumber ^
     --collect-all openpyxl ^
+    --collect-all bs4 ^
+    --collect-all customtkinter ^
+    --icon "control_id_reader.ico" ^
+    --add-data "control_id_reader.ico;." ^
     pdf_para_excel.py
 
 # Ou use o script de atualização
@@ -103,8 +121,8 @@ pdf_reader/
 ├── README.md                 # Este arquivo
 ├── criar_exe.bat             # Script para criar o .exe pela primeira vez
 ├── atualizar_exe.bat         # Script para recriar o .exe após alterações
+├── control_id_reader.ico     # Ícone do app (janela e atalho)
 ├── Control ID Reader.spec    # Configuração do PyInstaller
-├── config.json               # Configurações salvas (não versionado)
 └── dist/                     # Executável gerado (não versionado)
 ```
 

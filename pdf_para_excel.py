@@ -1,3 +1,4 @@
+import os
 import email as email_lib
 import pdfplumber
 from bs4 import BeautifulSoup
@@ -5,7 +6,8 @@ from pathlib import Path
 from openpyxl import Workbook
 import re
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+from tkinter import filedialog, messagebox
+import customtkinter as ctk
 from datetime import datetime
 import threading
 import json
@@ -18,8 +20,13 @@ class PdfToExcelApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Control ID Reader - Conversor de Ponto")
-        self.root.geometry("780x620")
-        self.root.resizable(False, False)
+        self.root.geometry("820x680")
+        self.root.resizable(True, True)
+        self.root.minsize(700, 580)
+
+        # Tema padrão
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("blue")
 
         # Aplicar ícone da janela
         self._aplicar_icone()
@@ -30,13 +37,11 @@ class PdfToExcelApp:
         # Variáveis de estado
         self.pdf_paths = []
         self.processamento_ativo = False
+        self._tema_atual = "dark"
 
         # Diretórios padrão (serão sobrescritos pelas configurações salvas)
         self.dir_abrir_pdf = str(Path.home() / "Downloads")
         self.dir_salvar_excel = str(Path.home() / "Documents")
-
-        # Configurar estilo moderno
-        self.configurar_estilo()
 
         # Criar interface
         self.criar_interface()
@@ -64,159 +69,188 @@ class PdfToExcelApp:
         y = (tela_altura // 2) - (altura // 2)
         self.root.geometry(f"{largura}x{altura}+{x}+{y}")
 
-    def configurar_estilo(self):
-        """Aplica um estilo mais moderno à interface."""
-        style = ttk.Style()
-        style.theme_use('clam')
+    def alternar_tema(self):
+        """Alterna entre dark e light mode."""
+        if self._tema_atual == "dark":
+            ctk.set_appearance_mode("light")
+            self._tema_atual = "light"
+            self.btn_tema.configure(text="☀️  Light")
+        else:
+            ctk.set_appearance_mode("dark")
+            self._tema_atual = "dark"
+            self.btn_tema.configure(text="🌙  Dark")
+        self.root.after(50, self._atualizar_cores_log)
 
-        # Cores modernas
-        style.configure('TFrame', background='white')
-        style.configure('TLabel', background='white', foreground='#333')
-        style.configure('TButton', background='#4a90d9', foreground='white',
-                       padding=6, font=('Segoe UI', 9))
-        style.map('TButton', background=[('active', '#3a7bc8')])
+    def _atualizar_cores_log(self):
+        """Sincroniza as cores do tk.Text e tk.Listbox com o tema CTk atual."""
+        is_dark = self._tema_atual == "dark"
+        bg      = "#1e1e1e" if is_dark else "#f0f0f0"
+        fg      = "#d4d4d4" if is_dark else "#222222"
+        sel_bg  = "#264f78" if is_dark else "#1f6aa5"
 
-        # Botão verde — adicionar
-        style.configure('Adicionar.TButton', background='#27ae60', foreground='white',
-                        padding=6, font=('Segoe UI', 9))
-        style.map('Adicionar.TButton', background=[('active', '#1e8449')])
+        self.log_text.configure(bg=bg, fg=fg,
+                                insertbackground=fg, selectbackground=sel_bg)
+        self.log_text.tag_config("info",       foreground="#d4d4d4" if is_dark else "#333333")
+        self.log_text.tag_config("success",    foreground="#4ec94e" if is_dark else "#1e7e34")
+        self.log_text.tag_config("error",      foreground="#f47070" if is_dark else "#c0392b")
+        self.log_text.tag_config("processing", foreground="#f0c060" if is_dark else "#d68910")
 
-        # Botão laranja — remover selecionados
-        style.configure('Remover.TButton', background='#e67e22', foreground='white',
-                        padding=6, font=('Segoe UI', 9))
-        style.map('Remover.TButton', background=[('active', '#ca6f1e')])
-
-        # Botão vermelho — limpar tudo
-        style.configure('Limpar.TButton', background='#c0392b', foreground='white',
-                        padding=6, font=('Segoe UI', 9))
-        style.map('Limpar.TButton', background=[('active', '#a93226')])
-
-        # Botão azul — ação principal
-        style.configure('Principal.TButton', background='#2980b9', foreground='white',
-                        padding=6, font=('Segoe UI', 9, 'bold'))
-        style.map('Principal.TButton', background=[('active', '#2471a3')])
-
-        # Botão cinza — ação secundária
-        style.configure('Secundario.TButton', background='#7f8c8d', foreground='white',
-                        padding=6, font=('Segoe UI', 9))
-        style.map('Secundario.TButton', background=[('active', '#717d7e')])
-
-        style.configure('Header.TLabel', font=('Segoe UI', 14, 'bold'),
-                       background='white', foreground='#2c3e50')
-        style.configure('Status.TLabel', font=('Segoe UI', 9), foreground='#666')
-        style.configure('Success.TLabel', font=('Segoe UI', 9), foreground='#27ae60')
-        style.configure('Error.TLabel', font=('Segoe UI', 9), foreground='#c0392b')
-        style.configure('LabelFrame', background='white')
-        style.configure('LabelFrame.Label', background='white', foreground='#2c3e50')
-
-        style.configure('Treeview', rowheight=25, font=('Segoe UI', 9))
-        style.configure('Treeview.Heading', font=('Segoe UI', 9, 'bold'))
+        self.lista_arquivos.configure(
+            bg=bg, fg=fg,
+            selectbackground=sel_bg, selectforeground="white"
+        )
 
     def criar_interface(self):
         """Cria todos os componentes da interface."""
-        # Permitir que o frame principal expanda junto com a janela
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
-        # Container principal - centralizado
-        main_frame = ttk.Frame(self.root, padding="20")
-        main_frame.grid(row=0, column=0, sticky=(tk.N, tk.S, tk.E, tk.W))
+        # Container principal
+        main_frame = ctk.CTkFrame(self.root, fg_color="transparent")
+        main_frame.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
         main_frame.columnconfigure(0, weight=1)
+        main_frame.rowconfigure(2, weight=1)  # log expande verticalmente
 
-        # Título
-        ttk.Label(main_frame, text="Control ID Reader", style='Header.TLabel')\
-            .grid(row=0, column=0, pady=(0, 5))
-        ttk.Label(main_frame, text="Conversor de Folhas de Ponto para Excel", foreground='#666')\
-            .grid(row=1, column=0, pady=(0, 15))
+        # ── Cabeçalho ───────────────────────────────────────────
+        header = ctk.CTkFrame(main_frame, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.columnconfigure(0, weight=1)
 
-        # Seção de seleção de arquivos
-        self.criar_secao_selecao(main_frame, 2)
+        ctk.CTkLabel(header, text="Control ID Reader",
+                     font=ctk.CTkFont(family="Segoe UI", size=22, weight="bold")
+                     ).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(header, text="Conversor de Folhas de Ponto para Excel",
+                     font=ctk.CTkFont(family="Segoe UI", size=12),
+                     text_color=("gray40", "gray70")
+                     ).grid(row=1, column=0, sticky="w")
 
-        # Seção de status/console
-        self.criar_secao_status(main_frame, 3)
+        # Botão tema no canto superior direito
+        self.btn_tema = ctk.CTkButton(
+            header, text="🌙  Dark", width=100, height=30,
+            fg_color=("gray80", "gray25"), text_color=("gray10", "gray90"),
+            hover_color=("gray70", "gray35"),
+            command=self.alternar_tema
+        )
+        self.btn_tema.grid(row=0, column=1, rowspan=2, sticky="e")
 
-        # Seção de ações
-        self.criar_secao_acoes(main_frame, 4)
+        # Seções
+        self.criar_secao_selecao(main_frame, 1)
+        self.criar_secao_status(main_frame, 2)
+        self.criar_secao_acoes(main_frame, 3)
     def criar_secao_selecao(self, parent, row):
         """Cria a seção para seleção de arquivos."""
-        frame = ttk.LabelFrame(parent, text=" Seleção de Arquivos ", padding="12")
-        frame.grid(row=row, column=0, sticky=(tk.W, tk.E), pady=(0, 8))
+        frame = ctk.CTkFrame(parent)
+        frame.grid(row=row, column=0, sticky="ew", pady=(0, 8))
         frame.columnconfigure(0, weight=1)
 
-        # Lista de arquivos
-        list_frame = ttk.Frame(frame)
-        list_frame.grid(row=0, column=0, sticky=(tk.W, tk.E))
+        ctk.CTkLabel(frame, text="Seleção de Arquivos",
+                     font=ctk.CTkFont(size=13, weight="bold")
+                     ).grid(row=0, column=0, sticky="w", padx=14, pady=(10, 6))
+
+        # Lista de arquivos (tk.Listbox ainda não tem substituto CTk nativo)
+        list_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        list_frame.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 4))
         list_frame.columnconfigure(0, weight=1)
 
-        self.lista_arquivos = tk.Listbox(list_frame, height=5, selectmode=tk.EXTENDED,
-                                        font=('Segoe UI', 9))
-        self.lista_arquivos.grid(row=0, column=0, sticky=(tk.W, tk.E))
+        self.lista_arquivos = tk.Listbox(
+            list_frame, height=5, selectmode=tk.EXTENDED,
+            font=("Segoe UI", 9), relief="flat", borderwidth=0,
+            activestyle="none", selectbackground="#1f6aa5",
+            selectforeground="white"
+        )
+        self.lista_arquivos.grid(row=0, column=0, sticky="ew")
 
-        # Scrollbar
-        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL,
-                                  command=self.lista_arquivos.yview)
-        scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        scrollbar = ctk.CTkScrollbar(list_frame, command=self.lista_arquivos.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
         self.lista_arquivos.configure(yscrollcommand=scrollbar.set)
 
-        # Botões de controle
-        btn_frame = ttk.Frame(frame)
-        btn_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
+        # Botões
+        btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        btn_frame.grid(row=2, column=0, sticky="w", padx=12, pady=(4, 4))
 
-        ttk.Button(btn_frame, text="+ Adicionar Arquivos",
-                  command=self.adicionar_pdfs, style='Adicionar.TButton').grid(row=0, column=0, padx=5)
-        ttk.Button(btn_frame, text="❌ Remover Selecionados",
-                  command=self.remover_selecionados, style='Remover.TButton').grid(row=0, column=1, padx=5)
-        ttk.Button(btn_frame, text="🗑️ Limpar Tudo",
-                  command=self.limpar_lista, style='Limpar.TButton').grid(row=0, column=2, padx=5)
+        ctk.CTkButton(btn_frame, text="+ Adicionar Arquivos", width=160,
+                      fg_color="#27ae60", hover_color="#1e8449",
+                      command=self.adicionar_pdfs
+                      ).grid(row=0, column=0, padx=(0, 6))
 
-        # Info
-        self.info_arquivos = ttk.Label(frame, text="Nenhum arquivo selecionado",
-                                       style='Status.TLabel')
-        self.info_arquivos.grid(row=2, column=0, sticky=tk.W, pady=(5, 0))
+        ctk.CTkButton(btn_frame, text="✕ Remover Selecionados", width=170,
+                      fg_color="#e67e22", hover_color="#ca6f1e",
+                      command=self.remover_selecionados
+                      ).grid(row=0, column=1, padx=(0, 6))
+
+        ctk.CTkButton(btn_frame, text="🗑  Limpar Tudo", width=130,
+                      fg_color="#c0392b", hover_color="#a93226",
+                      command=self.limpar_lista
+                      ).grid(row=0, column=2)
+
+        self.info_arquivos = ctk.CTkLabel(
+            frame, text="Nenhum arquivo selecionado",
+            font=ctk.CTkFont(size=11), text_color=("gray40", "gray60")
+        )
+        self.info_arquivos.grid(row=3, column=0, sticky="w", padx=14, pady=(0, 10))
 
     def criar_secao_status(self, parent, row):
         """Cria a seção de log/status."""
-        frame = ttk.LabelFrame(parent, text=" Log de Processamento ", padding="10")
-        frame.grid(row=row, column=0, sticky=(tk.W, tk.E), pady=(0, 8))
+        frame = ctk.CTkFrame(parent)
+        frame.grid(row=row, column=0, sticky="nsew", pady=(0, 8))
         frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(1, weight=1)
 
-        self.log_text = scrolledtext.ScrolledText(frame, height=8, wrap=tk.WORD,
-                                                   font=('Consolas', 8))
-        self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E))
+        ctk.CTkLabel(frame, text="Log de Processamento",
+                     font=ctk.CTkFont(size=13, weight="bold")
+                     ).grid(row=0, column=0, sticky="w", padx=14, pady=(10, 6))
 
-        # Configurar cores de log
-        self.log_text.tag_config('info', foreground='#333')
-        self.log_text.tag_config('success', foreground='#27ae60')
-        self.log_text.tag_config('error', foreground='#c0392b')
-        self.log_text.tag_config('processing', foreground='#f39c12')
+        self.log_text = tk.Text(
+            frame, height=9, wrap=tk.WORD,
+            font=("Consolas", 9), relief="flat", borderwidth=0,
+            padx=8, pady=6
+        )
+        self.log_text.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+
+        log_scroll = ctk.CTkScrollbar(frame, command=self.log_text.yview)
+        log_scroll.grid(row=1, column=1, sticky="ns", pady=(0, 12), padx=(0, 8))
+        self.log_text.configure(yscrollcommand=log_scroll.set)
+
+        self._atualizar_cores_log()
 
     def criar_secao_acoes(self, parent, row):
         """Cria a seção de botões de ação."""
-        frame = ttk.Frame(parent)
-        frame.grid(row=row, column=0, sticky=(tk.W, tk.E), pady=(5, 0))
+        frame = ctk.CTkFrame(parent, fg_color="transparent")
+        frame.grid(row=row, column=0, sticky="ew", pady=(4, 0))
         frame.columnconfigure(0, weight=1)
 
         # Barra de progresso
         self.progress_var = tk.DoubleVar()
-        self.progress_bar = ttk.Progressbar(frame, variable=self.progress_var,
-                                           maximum=100, mode='determinate')
-        self.progress_bar.grid(row=0, column=0, columnspan=3, sticky=(tk.W, tk.E),
-                             pady=(0, 5))
+        self.progress_bar = ctk.CTkProgressBar(frame, variable=self.progress_var,
+                                               height=10)
+        self.progress_bar.set(0)
+        self.progress_bar.grid(row=0, column=0, columnspan=3, sticky="ew",
+                               pady=(0, 10))
 
-        # Botão de processar
-        btn_processar = ttk.Button(frame, text="Gerar Planilha Excel",
-                                   command=self.iniciar_processamento,
-                                   style='Principal.TButton')
-        btn_processar.grid(row=1, column=0, sticky=tk.W)
+        # Botão principal
+        self.btn_processar = ctk.CTkButton(
+            frame, text="⚡  Gerar Planilha Excel",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            height=40, fg_color="#2980b9", hover_color="#2471a3",
+            command=self.iniciar_processamento
+        )
+        self.btn_processar.grid(row=1, column=0, sticky="w")
 
-        self.btn_processar = btn_processar
+        # Botão secundário
+        ctk.CTkButton(
+            frame, text="💾  Salvar Configurações",
+            height=40, width=180,
+            fg_color=("gray75", "gray30"), text_color=("gray10", "gray90"),
+            hover_color=("gray65", "gray40"),
+            command=self.salvar_configuracoes
+        ).grid(row=1, column=1, padx=(10, 0), sticky="w")
 
-        # Botão de salvar configurações
-        ttk.Button(frame, text="Salvar Configurações",
-                  command=self.salvar_configuracoes, style='Secundario.TButton').grid(row=1, column=1, padx=(10, 0))
-
-        self.status_final = ttk.Label(frame, text="", style='Status.TLabel')
-        self.status_final.grid(row=2, column=0, columnspan=3, pady=(5, 0))
+        self.status_final = ctk.CTkLabel(
+            frame, text="",
+            font=ctk.CTkFont(size=11), text_color=("gray40", "gray60")
+        )
+        self.status_final.grid(row=2, column=0, columnspan=3,
+                               sticky="w", pady=(8, 0))
 
     def adicionar_pdfs(self):
         """Abre dialog para selecionar arquivos PDF ou MHTML."""
@@ -236,7 +270,7 @@ class PdfToExcelApp:
                 if f not in self.pdf_paths:
                     self.pdf_paths.append(f)
                     self.lista_arquivos.insert(tk.END, Path(f).name)
-            self.info_arquivos.config(text=f"{len(self.pdf_paths)} arquivo(s) selecionado(s)")
+            self.info_arquivos.configure(text=f"{len(self.pdf_paths)} arquivo(s) selecionado(s)")
 
             # Atualizar o último diretório usado
             self.dir_abrir_pdf = str(Path(files[0]).parent)
@@ -252,13 +286,13 @@ class PdfToExcelApp:
             self.lista_arquivos.delete(i)
             self.pdf_paths.pop(i)
 
-        self.info_arquivos.config(text=f"{len(self.pdf_paths)} arquivo(s) selecionado(s)")
+        self.info_arquivos.configure(text=f"{len(self.pdf_paths)} arquivo(s) selecionado(s)")
 
     def limpar_lista(self):
         """Limpa todos os arquivos da lista."""
         self.pdf_paths.clear()
         self.lista_arquivos.delete(0, tk.END)
-        self.info_arquivos.config(text="Nenhum arquivo selecionado")
+        self.info_arquivos.configure(text="Nenhum arquivo selecionado")
 
     def log(self, mensagem, tipo='info'):
         """Adiciona mensagem ao log de forma thread-safe via root.after."""
@@ -268,14 +302,10 @@ class PdfToExcelApp:
             self.log_text.see(tk.END)
         self.root.after(0, _inserir)
 
-    def _atualizar_progresso(self, valor):
-        """Atualiza a barra de progresso de forma thread-safe."""
-        self.root.after(0, lambda: self.progress_var.set(valor))
-
     def _finalizar_processamento(self, todos_dias, total_pdfs, total_dias):
         """Chamado na thread principal ao fim do processamento para abrir o filedialog."""
         self.processamento_ativo = False
-        self.btn_processar.config(state='normal')
+        self.btn_processar.configure(state="normal")
         if todos_dias:
             self.salvar_excel(todos_dias)
             self.log(f"\n✅ Processamento concluído!", "success")
@@ -623,8 +653,7 @@ class PdfToExcelApp:
                 except Exception as e:
                     self.log(f"  ✗ Erro inesperado em '{nome_arquivo}': {str(e)}", "error")
 
-                # Fix 2: atualizar progresso via root.after
-                self._atualizar_progresso(((idx + 1) / total_pdfs) * 100)
+                self.root.after(0, lambda: self.progress_bar.set(((idx + 1) / total_pdfs)))
 
         except Exception as e:
             self.log(f"Erro crítico no processamento: {str(e)}", "error")
@@ -722,7 +751,7 @@ class PdfToExcelApp:
         if not resposta:
             return
 
-        self.btn_processar.config(state='disabled')
+        self.btn_processar.configure(state="disabled")
         self.log("--- Iniciando processamento ---", "processing")
         self.progress_var.set(0)
 
@@ -730,10 +759,17 @@ class PdfToExcelApp:
         thread = threading.Thread(target=self.processar_pdfs_thread, daemon=True)
         thread.start()
 
+    def _config_path(self):
+        """Retorna o caminho do config.json em %APPDATA%\\ControlIDReader\\."""
+        appdata = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+        config_dir = appdata / "ControlIDReader"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        return config_dir / "config.json"
+
     def carregar_configuracoes(self):
         """Carrega configurações salvas."""
         try:
-            config_file = Path(__file__).parent / "config.json"
+            config_file = self._config_path()
             if config_file.exists():
                 with open(config_file, 'r', encoding='utf-8') as f:
                     content = f.read().strip()
@@ -743,6 +779,12 @@ class PdfToExcelApp:
                             self.dir_abrir_pdf = config["dir_abrir_pdf"]
                         if config.get("dir_salvar_excel") and Path(config["dir_salvar_excel"]).exists():
                             self.dir_salvar_excel = config["dir_salvar_excel"]
+                        if config.get("tema") in ("dark", "light"):
+                            self._tema_atual = config["tema"]
+                            ctk.set_appearance_mode(self._tema_atual)
+                            label = "🌙  Dark" if self._tema_atual == "dark" else "☀️  Light"
+                            self.btn_tema.configure(text=label)
+                            self._atualizar_cores_log()
         except Exception:
             pass  # Ignora erros de configuração — defaults já estão definidos no __init__
 
@@ -752,9 +794,10 @@ class PdfToExcelApp:
             config = {
                 "dir_abrir_pdf": self.dir_abrir_pdf,
                 "dir_salvar_excel": self.dir_salvar_excel,
+                "tema": self._tema_atual,
                 "data_ultima_execucao": datetime.now().isoformat()
             }
-            config_file = Path(__file__).parent / "config.json"
+            config_file = self._config_path()
             with open(config_file, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
             if not silencioso:
@@ -768,7 +811,7 @@ class PdfToExcelApp:
 
 def main():
     """Função principal."""
-    root = tk.Tk()
+    root = ctk.CTk()
     app = PdfToExcelApp(root)
     root.mainloop()
 
