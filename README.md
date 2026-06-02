@@ -5,15 +5,19 @@ Converte um ou múltiplos arquivos de folha de ponto (PDF ou MHTML) da Control I
 ## Funcionalidades
 
 - ✅ Processa um ou múltiplos arquivos simultaneamente (PDF e MHTML)
+- ✅ Suporte a PDFs com múltiplos funcionários em um único arquivo
+- ✅ Separação de PDF multi-funcionário em arquivos individuais compactados em ZIP
+- ✅ Detecção automática de múltiplos formatos de PDF (colunas separadas ou mescladas)
 - ✅ Interface moderna com CustomTkinter — cantos arredondados, tipografia limpa
 - ✅ Tema Dark/Light alternável com botão dedicado
-- ✅ Botões com cores intuitivas (verde/laranja/vermelho/azul)
+- ✅ Botões com cores intuitivas (verde/laranja/vermelho/azul/roxo)
 - ✅ Seleção de arquivos com preview visual
 - ✅ Log de processamento em tempo real com cores por tipo de mensagem
 - ✅ Barra de progresso visual
-- ✅ Extrai dados do funcionário (nome, CPF, PIS, cargo, admissão, matrícula, centro de custo, departamento)
-- ✅ Extrai marcações de ponto por dia (até 3 entradas/saídas) e duração
-- ✅ Gera planilha Excel formatada com colunas ajustadas
+- ✅ Extrai dados completos do funcionário (nome, CPF, PIS, cargo, admissão, matrícula, centro de custo, departamento)
+- ✅ Extrai marcações de ponto por dia (até 3 entradas/saídas), duração e carga horária
+- ✅ Armazena horários contratuais do funcionário para uso futuro
+- ✅ Gera planilha Excel formatada com cabeçalho, resumo e tabela de ponto ordenada
 - ✅ Memoriza separadamente o último diretório usado para abrir arquivos e para salvar Excel
 - ✅ Salva tema (dark/light) entre sessões
 
@@ -41,10 +45,56 @@ Converte um ou múltiplos arquivos de folha de ponto (PDF ou MHTML) da Control I
    - Use **"✕ Remover Selecionados"** para remover apenas os arquivos marcados na lista
    - Use **"🗑 Limpar Tudo"** para limpar a lista inteira de uma vez
    - Clique em **"⚡ Gerar Planilha Excel"** para processar
+   - Clique em **"✂️ Separar PDF por Funcionário"** para dividir um PDF com múltiplos funcionários
 
-5. Escolha o local e nome para salvar a planilha
+5. Escolha o local e nome para salvar a planilha ou o ZIP
 
 6. Aguarde o processamento — o log mostrará o progresso em tempo real
+
+## Separação de PDF por Funcionário
+
+O botão **"✂️ Separar PDF por Funcionário"** permite dividir um único PDF que contenha múltiplos funcionários em arquivos individuais, compactados em um ZIP.
+
+- Cada arquivo gerado recebe o nome do funcionário (sem acentos, espaços viram `_`)
+- O processo é independente da lista de arquivos principal
+- Após gerar o ZIP, os PDFs separados podem ser adicionados normalmente para conversão em Excel
+
+> **Observação:** se o PDF contiver apenas um funcionário, o app avisa que a separação é desnecessária.
+
+## Estrutura da planilha gerada
+
+### Funcionário único (ou múltiplos arquivos do mesmo CPF)
+
+A aba **Ponto** é organizada em três blocos:
+
+1. **Cabeçalho** — dados do funcionário extraídos do arquivo (empresa, nome, CPF, PIS, matrícula, admissão, cargo, departamento, centro de custo). Campos não encontrados são omitidos automaticamente.
+
+2. **Resumo** — linha única com dias efetivamente trabalhados (dias sem nenhuma marcação são excluídos) e média de horas por dia trabalhado.
+
+3. **Tabela de ponto** — registros ordenados por data, com as colunas: DIA, MARCAÇÕES, ENT. 1, SAÍ. 1, ENT. 2, SAÍ. 2, ENT. 3, SAÍ. 3, DURAÇÃO, CH.
+
+### Múltiplos funcionários
+
+A aba **Ponto** contém a tabela completa com as colunas FUNCIONÁRIO e CPF adicionadas, ordenada por nome e depois por data. Uma aba separada **Resumo** é criada com uma linha por funcionário contendo: nome, CPF, PIS, cargo, admissão, matrícula, departamento, centro de custo, dias trabalhados e média de horas/dia.
+
+### Nome do arquivo gerado
+
+O nome é sugerido automaticamente com base no cenário:
+
+| Cenário | Exemplo |
+|---|---|
+| 1 arquivo, 1 funcionário | `Ponto_Gabriela_Almeida_Abr2026.xlsx` |
+| Vários arquivos, mesmo funcionário | `Ponto_Gabriela_Almeida.xlsx` |
+| Vários funcionários | `Ponto_3Funcionarios_Mai2026.xlsx` |
+
+## Formatos suportados
+
+| Formato | Observação |
+|---|---|
+| `.pdf` | Folha de ponto exportada diretamente pelo sistema — suporta múltiplos layouts automaticamente |
+| `.mhtml` | Salvo pelo navegador via "Salvar página como → Página da Web, Completa (*.mhtml)" |
+
+> **Atenção:** arquivos `.html` simples geralmente não contêm dados (o conteúdo é carregado dinamicamente). Use sempre `.mhtml`.
 
 ## Configurações salvas automaticamente
 
@@ -59,20 +109,11 @@ O arquivo `config.json` é gerado automaticamente em `%APPDATA%\ControlIDReader\
 }
 ```
 
-As configurações são salvas automaticamente sempre que você abre ou salva um arquivo. Na próxima execução, os diálogos já abrem nas últimas pastas usadas e o tema é restaurado.
-
 > O caminho completo no Windows é `C:\Users\<seu_usuario>\AppData\Roaming\ControlIDReader\config.json`.
 
+As configurações são salvas automaticamente sempre que você abre ou salva um arquivo. Na próxima execução, os diálogos já abrem nas últimas pastas usadas e o tema é restaurado.
+
 O botão **"💾 Salvar Configurações"** permite forçar o salvamento manualmente com confirmação visual.
-
-## Formatos suportados
-
-| Formato | Observação |
-|---|---|
-| `.pdf` | Folha de ponto exportada diretamente pelo sistema |
-| `.mhtml` | Salvo pelo navegador via "Salvar página como → Página da Web, Completa (*.mhtml)" |
-
-> **Atenção:** arquivos `.html` simples geralmente não contêm dados (o conteúdo é carregado dinamicamente). Use sempre `.mhtml`.
 
 ## Como criar o executável (.exe)
 
@@ -93,6 +134,7 @@ pip install -r requirements.txt
 # Gere o executável (Windows)
 python -m PyInstaller --clean --onefile --windowed --name "Control ID Reader" ^
     --collect-all pdfplumber ^
+    --collect-all pypdf ^
     --collect-all openpyxl ^
     --collect-all bs4 ^
     --collect-all customtkinter ^

@@ -1,6 +1,8 @@
 import os
+import zipfile
 import email as email_lib
 import pdfplumber
+import pypdf
 from bs4 import BeautifulSoup
 from pathlib import Path
 from openpyxl import Workbook
@@ -245,6 +247,13 @@ class PdfToExcelApp:
             command=self.salvar_configuracoes
         ).grid(row=1, column=1, padx=(10, 0), sticky="w")
 
+        ctk.CTkButton(
+            frame, text="✂️  Separar PDF por Funcionário",
+            height=40, width=220,
+            fg_color="#7d3c98", hover_color="#6c3483",
+            command=self.separar_pdf_por_funcionario
+        ).grid(row=1, column=2, padx=(10, 0), sticky="w")
+
         self.status_final = ctk.CTkLabel(
             frame, text="",
             font=ctk.CTkFont(size=11), text_color=("gray40", "gray60")
@@ -302,12 +311,12 @@ class PdfToExcelApp:
             self.log_text.see(tk.END)
         self.root.after(0, _inserir)
 
-    def _finalizar_processamento(self, todos_dias, total_pdfs, total_dias):
+    def _finalizar_processamento(self, todos_dias, total_pdfs, total_dias, todos_funcionarios):
         """Chamado na thread principal ao fim do processamento para abrir o filedialog."""
         self.processamento_ativo = False
         self.btn_processar.configure(state="normal")
         if todos_dias:
-            self.salvar_excel(todos_dias)
+            self.salvar_excel(todos_dias, todos_funcionarios)
             self.log(f"\n✅ Processamento concluído!", "success")
             self.log(f"Total: {total_pdfs} arquivo(s), {total_dias} dia(s) registrado(s)", "success")
         else:
@@ -395,49 +404,138 @@ class PdfToExcelApp:
         return info, None
 
     def extrair_dados_ponto(self, tabelas):
-        """Extrai dados de ponto de uma lista de tabelas."""
+        """Extrai dados de ponto e horários contratuais de uma lista de tabelas.
+        Retorna (dias, horarios_contratuais).
+
+        Suporta múltiplos formatos de PDF — a detecção é semântica:
+        - ent2/sai2 podem estar mesclados em [4] ou divididos por pdfplumber
+        - CH (5 dígitos) e duração (HH:MM) são localizados por valor, não por índice fixo
+        """
         dias = []
-        dia_atual = None
+        horarios_contratuais = []
+        capturando_horarios  = False
+
+        TIME_RE = re.compile(r'^\d{1,2}:\d{2}$')
+        CH_RE   = re.compile(r'^\d{5}$')
+        # Padrão de linha de dia: deve começar com DD/MM/AA - DIA_SEMANA
+        DAY_RE  = re.compile(r'^\d{2}/\d{2}/\d{2,4}\s*-\s*(SEG|TER|QUA|QUI|SEX|SAB|DOM)', re.IGNORECASE)
+
+        MARCADORES_FIM = [
+            "horários contratuais", "horarios contratuais",
+            "código do horário",    "codigo do horario",
+        ]
+
+        def is_time(s): return bool(s and TIME_RE.match(str(s).strip()))
+        def is_ch(s):   return bool(s and CH_RE.match(str(s).strip()))
+        def cel(i):     return str(row[i]).strip() if i < len(row) and row[i] else ""
 
         for row in tabelas:
-            # Detectar nova linha de dia
-            if row and len(row) > 0 and row[0]:
-                dia_str = str(row[0]).upper()
-                if any(mes in dia_str for mes in ["SEG", "TER", "QUA", "QUI", "SEX", "SAB", "DOM"]):
-                    dia_atual = str(row[0]).strip()
-                    dia = {
-                        "dia": dia_atual,
-                        "marcacoes": "",
-                        "ent1": "", "sai1": "", "ent2": "", "sai2": "",
-                        "ent3": "", "sai3": "", "duracao": "", "ch": ""
-                    }
-                    dias.append(dia)
+            if not row:
+                continue
 
-            if dia_atual and len(dias) > 0:
-                idx = len(dias) - 1
-                # Marcações
-                if len(row) > 1 and row[1]:
-                    dias[idx]["marcacoes"] = str(row[1]).strip()
-                # Jornada
-                if len(row) > 2 and row[2]:
-                    dias[idx]["ent1"] = str(row[2]).strip()
-                if len(row) > 3 and row[3]:
-                    dias[idx]["sai1"] = str(row[3]).strip()
-                if len(row) > 4 and row[4]:
-                    dias[idx]["ent2"] = str(row[4]).strip()
-                if len(row) > 5 and row[5]:
-                    dias[idx]["sai2"] = str(row[5]).strip()
-                if len(row) > 6 and row[6]:
-                    dias[idx]["ent3"] = str(row[6]).strip()
-                if len(row) > 7 and row[7]:
-                    dias[idx]["sai3"] = str(row[7]).strip()
-                # Duração e CH
-                if len(row) > 8 and row[8]:
-                    dias[idx]["duracao"] = str(row[8]).strip()
-                if len(row) > 9 and row[9]:
-                    dias[idx]["ch"] = str(row[9]).strip()
+            linha_texto = " ".join(str(c) for c in row if c).lower()
 
-        return dias
+            # ── Horários Contratuais ──────────────────────────────────────────
+            if any(m in linha_texto for m in MARCADORES_FIM):
+                capturando_horarios = True
+                continue
+
+            if capturando_horarios:
+                codigo = cel(0)
+                if codigo:
+                    horario = {"codigo": codigo}
+                    par = 1
+                    col_h = 2
+                    while col_h < len(row):
+                        ent = cel(col_h)
+                        sai = cel(col_h + 2) if col_h + 2 < len(row) else ""
+                        if ent or sai:
+                            horario[f"ent{par}"] = ent
+                            horario[f"sai{par}"] = sai
+                            par += 1
+                        col_h += 4
+                    horarios_contratuais.append(horario)
+                continue
+
+            # ── Linha de dia: deve ter formato DD/MM/AA - DIA ─────────────────
+            if not (row[0] and DAY_RE.match(str(row[0]).strip())):
+                continue
+
+            dia = {
+                "dia":       str(row[0]).strip(),
+                "marcacoes": cel(1),
+                "ent1":      cel(2),
+                "sai1":      cel(3),
+                "ent2": "", "sai2": "",
+                "ent3": "", "sai3": "",
+                "duracao":   "",
+                "ch":        "",
+            }
+
+            # ── ent2 / sai2: detectar mescla e tempo dividido ─────────────────
+            cel4_raw = cel(4)
+            cel5_raw = cel(5)
+
+            # Reconstituir tempo dividido pelo pdfplumber: "19:00 00" + ":05" → "19:00" + "00:05"
+            if cel5_raw.startswith(":") and cel4_raw:
+                parts4 = cel4_raw.split()
+                if parts4:
+                    hours_part  = parts4[-1]
+                    cel4_raw    = " ".join(parts4[:-1])
+                    cel5_raw    = f"{hours_part}{cel5_raw}"  # "00" + ":05" → "00:05"
+
+            # Verificar quantos valores HH:MM existem em cel4_raw
+            time_parts4 = [p for p in cel4_raw.split() if is_time(p)] if cel4_raw else []
+
+            if len(time_parts4) >= 2:
+                # ent2 e sai2 mesclados em [4]
+                dia["ent2"] = time_parts4[0]
+                dia["sai2"] = time_parts4[1]
+                merged = True
+            else:
+                dia["ent2"] = cel4_raw if is_time(cel4_raw) else ""
+                dia["sai2"] = cel5_raw if is_time(cel5_raw) else ""
+                merged = False
+
+            # ── Localizar CH e duração por valor semântico ────────────────────
+            # CH é sempre um código de 5 dígitos (ex: "00021")
+            # Duração é HH:MM imediatamente antes do CH
+            # Percorre posições de maior para menor índice para pegar o CH mais à direita
+            ch_positions = [9, 8, 7, 6, 5] if not merged else [7, 6, 5]
+
+            found = False
+            for ch_i in ch_positions:
+                v = cel(ch_i)
+                if is_ch(v):
+                    dia["ch"] = v
+                    prev = cel(ch_i - 1)
+                    if is_time(prev):
+                        dia["duracao"] = prev
+                    # Formato B completo (CH em [9]): extrair ent3/sai3
+                    if ch_i == 9:
+                        dia["ent3"] = cel(6)
+                        dia["sai3"] = cel(7)
+                    found = True
+                    break
+
+            if not found:
+                # CH ausente — determinar contexto pelo índice [9]
+                # Formato B tem CH em [9] → duração em [8], ent3/sai3 em [6]/[7]
+                # Formato A tem I/P/D em [9] → duração em [6], nada mais
+                is_format_b = is_ch(cel(9))
+                search_order = [8, 7, 6] if is_format_b else [6, 7, 8]
+
+                for dur_i in search_order:
+                    if is_time(cel(dur_i)):
+                        dia["duracao"] = cel(dur_i)
+                        if dur_i == 8 and is_format_b:
+                            dia["ent3"] = cel(6)
+                            dia["sai3"] = cel(7)
+                        break
+
+            dias.append(dia)
+
+        return dias, horarios_contratuais
 
     # ──────────────────────────────────────────────
     # Extração MHTML
@@ -561,13 +659,65 @@ class PdfToExcelApp:
 
     # ──────────────────────────────────────────────
 
+    def extrair_funcionarios_de_pdf(self, pdf):
+        """Processa um PDF com um ou mais funcionários, página a página.
+        Retorna lista de tuplas (info_funcionario, dias)."""
+        resultados = []
+
+        texto_atual  = ""
+        tabelas_atual = []
+
+        def finalizar_secao(texto, tabelas):
+            """Extrai e retorna (info, dias) de uma seção acumulada."""
+            if not texto.strip():
+                return None
+            info, motivo = self.extrair_info_funcionario(texto)
+            if not info.get("nome"):
+                self.log(f"    ⚠️ Seção sem funcionário identificado: {motivo}", "error")
+                return None
+            dias, horarios = self.extrair_dados_ponto(tabelas)
+            if horarios:
+                info["horarios_contratuais"] = horarios
+            return info, dias
+
+        for pagina in pdf.pages:
+            texto_pagina   = pagina.extract_text() or ""
+            tabelas_pagina = []
+            for t in (pagina.extract_tables() or []):
+                if t:
+                    tabelas_pagina.extend(t)
+
+            # Nova seção começa quando a página contém um cabeçalho de funcionário
+            e_novo_funcionario = bool(
+                re.search(r'NOME:\s*.+?\s+PIS/PASEP:', texto_pagina, re.IGNORECASE)
+            )
+
+            if e_novo_funcionario and texto_atual:
+                # Finaliza o funcionário anterior antes de começar o próximo
+                resultado = finalizar_secao(texto_atual, tabelas_atual)
+                if resultado:
+                    resultados.append(resultado)
+                texto_atual   = ""
+                tabelas_atual = []
+
+            texto_atual   += texto_pagina
+            tabelas_atual += tabelas_pagina
+
+        # Finaliza o último (ou único) funcionário
+        if texto_atual:
+            resultado = finalizar_secao(texto_atual, tabelas_atual)
+            if resultado:
+                resultados.append(resultado)
+
+        return resultados
+
     def processar_pdfs_thread(self):
         """Thread principal de processamento."""
-        # Fix 7: flag ativado antes do try para garantir consistência com o botão desabilitado
         self.processamento_ativo = True
         total_pdfs = len(self.pdf_paths)
         total_dias = 0
         todos_dias = []
+        todos_funcionarios = {}  # chave: CPF → info_funcionario completo
 
         try:
             self.log(f"Iniciando processamento de {total_pdfs} arquivo(s)...", "processing")
@@ -577,7 +727,6 @@ class PdfToExcelApp:
                 self.log(f"Processando: {nome_arquivo}", "processing")
 
                 try:
-                    # Fix 3: verificar se o arquivo ainda existe antes de abrir
                     if not Path(pdf_path).exists():
                         self.log(f"  ✗ Arquivo não encontrado: {nome_arquivo}", "error")
                         continue
@@ -585,7 +734,6 @@ class PdfToExcelApp:
                     ext = Path(pdf_path).suffix.lower()
 
                     if ext == ".mhtml":
-                        # ── Fluxo MHTML ──────────────────────────────
                         html_str = self.extrair_html_de_mhtml(pdf_path)
                         if not html_str:
                             self.log(f"  ✗ Não foi possível extrair HTML de '{nome_arquivo}'.", "error")
@@ -602,10 +750,6 @@ class PdfToExcelApp:
                         dias_do_pdf = self.extrair_dados_ponto_mhtml(soup)
 
                     else:
-                        # ── Fluxo PDF ────────────────────────────────
-                        texto_do_pdf  = ""
-                        tabelas_do_pdf = []
-
                         try:
                             pdf_aberto = pdfplumber.open(pdf_path)
                         except Exception:
@@ -614,31 +758,41 @@ class PdfToExcelApp:
                             continue
 
                         with pdf_aberto as pdf:
-                            for pagina in pdf.pages:
-                                texto_do_pdf += pagina.extract_text() or ""
-                                tables = pagina.extract_tables()
-                                for table in tables:
-                                    if table:
-                                        tabelas_do_pdf.extend(table)
+                            funcionarios_no_pdf = self.extrair_funcionarios_de_pdf(pdf)
 
-                        if not texto_do_pdf.strip():
-                            self.log(f"  ✗ '{nome_arquivo}' não contém texto extraível. "
-                                     f"Pode estar protegido por senha ou ser um PDF digitalizado (imagem).", "error")
+                        if not funcionarios_no_pdf:
+                            self.log(f"  ✗ '{nome_arquivo}' não contém texto extraível ou "
+                                     f"nenhum funcionário foi identificado.", "error")
                             continue
 
-                        info_funcionario, motivo_falha = self.extrair_info_funcionario(texto_do_pdf)
+                        for info_funcionario, dias_do_pdf in funcionarios_no_pdf:
+                            cpf = info_funcionario.get("cpf", info_funcionario.get("nome", ""))
+                            for dia in dias_do_pdf:
+                                dia["nome"]    = info_funcionario.get("nome", "")
+                                dia["empresa"] = info_funcionario.get("empresa", "")
+                                dia["cpf"]     = info_funcionario.get("cpf", "")
 
-                        if not info_funcionario.get("nome"):
-                            self.log(f"  ⚠️ Nenhum funcionário identificado em '{nome_arquivo}'. "
-                                     f"Motivo: {motivo_falha}", "error")
-                            continue
+                            if cpf not in todos_funcionarios:
+                                todos_funcionarios[cpf] = info_funcionario
+                            todos_funcionarios[cpf].setdefault("_dias", []).extend(dias_do_pdf)
 
-                        dias_do_pdf = self.extrair_dados_ponto(tabelas_do_pdf)
+                            todos_dias.extend(dias_do_pdf)
+                            total_dias += len(dias_do_pdf)
+                            self.log(f"  ✓ {info_funcionario.get('nome', cpf)}: "
+                                     f"{len(dias_do_pdf)} dia(s) extraído(s)", "success")
+                        continue  # pula o bloco de associação abaixo (já feito acima)
 
+                    # Associar dados básicos a cada dia e registrar funcionário completo (MHTML)
+                    cpf = info_funcionario.get("cpf", info_funcionario.get("nome", ""))
                     for dia in dias_do_pdf:
                         dia["nome"]    = info_funcionario.get("nome", "")
                         dia["empresa"] = info_funcionario.get("empresa", "")
                         dia["cpf"]     = info_funcionario.get("cpf", "")
+
+                    # Acumula dias do mesmo funcionário somando os que já existem
+                    if cpf not in todos_funcionarios:
+                        todos_funcionarios[cpf] = info_funcionario
+                    todos_funcionarios[cpf].setdefault("_dias", []).extend(dias_do_pdf)
 
                     todos_dias.extend(dias_do_pdf)
                     total_dias += len(dias_do_pdf)
@@ -658,13 +812,14 @@ class PdfToExcelApp:
         except Exception as e:
             self.log(f"Erro crítico no processamento: {str(e)}", "error")
         finally:
-            # Fix 1: devolver controle à thread principal para abrir o filedialog
-            self.root.after(0, lambda: self._finalizar_processamento(todos_dias, total_pdfs, total_dias))
+            self.root.after(0, lambda: self._finalizar_processamento(
+                todos_dias, total_pdfs, total_dias, todos_funcionarios))
 
-    def salvar_excel(self, dados):
-        """Salva os dados em um arquivo Excel."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        nome_sugerido = f"Ponto_{len(self.pdf_paths)}PDFs_{timestamp}.xlsx"
+    def salvar_excel(self, dados, todos_funcionarios):
+        """Salva os dados em um arquivo Excel com cabeçalho, aba de resumo e nome inteligente."""
+
+        # ── Nome do arquivo inteligente ─────────────────────────────────────
+        nome_sugerido = self._gerar_nome_arquivo(dados, todos_funcionarios)
 
         excel_path = filedialog.asksaveasfilename(
             title="Salvar planilha Excel",
@@ -678,59 +833,463 @@ class PdfToExcelApp:
             self.log("Operação cancelada pelo usuário.", "info")
             return
 
-        # Atualizar o último diretório usado para salvar
         self.dir_salvar_excel = str(Path(excel_path).parent)
         self.salvar_configuracoes(silencioso=True)
 
         try:
-            # Criar Excel
+            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+            from openpyxl.utils import get_column_letter
+
             wb = Workbook()
             ws = wb.active
             ws.title = "Ponto"
 
-            # Cabeçalhos
-            cabecalhos = [
-                "FUNCIONÁRIO", "DIA", "MARCAÇÕES", "ENT. 1", "SAÍ. 1",
-                "ENT. 2", "SAÍ. 2", "ENT. 3", "SAÍ. 3", "DURAÇÃO", "CH"
+            funcionario_unico = len(todos_funcionarios) == 1
+
+            # ── Estilos ─────────────────────────────────────────────────────
+            fonte_cab    = Font(bold=True, color="FFFFFF", size=10)
+            fill_cab     = PatternFill("solid", fgColor="1F4E79")
+            fill_info    = PatternFill("solid", fgColor="D6E4F0")
+            fonte_info   = Font(bold=True, size=10, color="1F4E79")
+            fonte_label  = Font(bold=True, size=9,  color="2C3E50")
+            alinhamento        = Alignment(vertical="center", horizontal="left")
+            alinhamento_centro = Alignment(vertical="center", horizontal="center")
+            borda_fina   = Border(
+                bottom=Side(style="thin", color="BFBFBF"),
+                top=Side(style="thin",    color="BFBFBF"),
+            )
+
+            linha_atual = 1
+
+            # ── Helper: dias efetivamente trabalhados ────────────────────────
+            def dias_trabalhados(dias_lista):
+                return [d for d in dias_lista if any(
+                    d.get(k, "").strip()
+                    for k in ("ent1", "sai1", "ent2", "sai2", "ent3", "sai3")
+                )]
+
+            # ── Ordenação: nome → data (ANTES de escrever qualquer linha) ────
+            def chave_ordenacao(dia):
+                nome     = dia.get("nome", "")
+                data_str = dia.get("dia", "").split(" ")[0]  # "DD/MM/AA" ou "DD/MM/AAAA"
+                try:
+                    from datetime import datetime as dt
+                    partes = data_str.split("/")
+                    fmt = "%d/%m/%y" if len(partes) == 3 and len(partes[2]) == 2 else "%d/%m/%Y"
+                    data = dt.strptime(data_str, fmt)
+                except ValueError:
+                    data = datetime.min
+                return (nome, data)
+
+            dados = sorted(dados, key=chave_ordenacao)
+
+            # ── Cabeçalho do funcionário (único) ─────────────────────────────
+            if funcionario_unico:
+                info = list(todos_funcionarios.values())[0]
+                campos = [
+                    ("Empresa",          info.get("empresa",      "")),
+                    ("Nome",             info.get("nome",         "")),
+                    ("CPF",              info.get("cpf",          "")),
+                    ("PIS/PASEP",        info.get("pis",          "")),
+                    ("Matrícula",        info.get("matricula",    "")),
+                    ("Admissão",         info.get("admissao",     "")),
+                    ("Cargo",            info.get("cargo",        "")),
+                    ("Departamento",     info.get("departamento", "")),
+                    ("Centro de Custo",  info.get("centro_custo", "")),
+                ]
+                campos = [(k, v) for k, v in campos if v]
+
+                n_colunas_cab = 10  # DIA MARCAÇÕES ENT1 SAÍ1 ENT2 SAÍ2 ENT3 SAÍ3 DURAÇÃO CH
+
+                ws.merge_cells(start_row=linha_atual, start_column=1,
+                               end_row=linha_atual, end_column=n_colunas_cab)
+                cel = ws.cell(row=linha_atual, column=1, value="DADOS DO FUNCIONÁRIO")
+                cel.font      = fonte_cab
+                cel.fill      = fill_cab
+                cel.alignment = Alignment(horizontal="center", vertical="center")
+                ws.row_dimensions[linha_atual].height = 20
+                linha_atual += 1
+
+                for i in range(0, len(campos), 2):
+                    par = campos[i:i+2]
+                    for col_offset, (label, valor) in enumerate(par):
+                        col_l   = 1 + col_offset * 5
+                        col_v   = col_l + 1
+                        col_fim = min(col_l + 4, n_colunas_cab)
+
+                        cel_l = ws.cell(row=linha_atual, column=col_l, value=label.upper() + ":")
+                        cel_l.font      = fonte_label
+                        cel_l.fill      = fill_info
+                        cel_l.alignment = alinhamento
+
+                        ws.merge_cells(start_row=linha_atual, start_column=col_v,
+                                       end_row=linha_atual, end_column=col_fim)
+                        cel_v = ws.cell(row=linha_atual, column=col_v, value=valor)
+                        cel_v.font      = fonte_info
+                        cel_v.fill      = fill_info
+                        cel_v.alignment = alinhamento
+
+                    ultimo_col_usado = 1 + len(par) * 5 - 1
+                    for col_r in range(ultimo_col_usado + 1, n_colunas_cab + 1):
+                        ws.cell(row=linha_atual, column=col_r).fill = fill_info
+
+                    ws.row_dimensions[linha_atual].height = 18
+                    linha_atual += 1
+
+                # Separador
+                for col_r in range(1, n_colunas_cab + 1):
+                    ws.cell(row=linha_atual, column=col_r).fill = PatternFill("solid", fgColor="FFFFFF")
+                ws.row_dimensions[linha_atual].height = 6
+                linha_atual += 1
+
+            # ── Colunas da tabela ─────────────────────────────────────────────
+            if funcionario_unico:
+                cabecalhos_visiveis = [
+                    "DIA", "MARCAÇÕES", "ENT. 1", "SAÍ. 1",
+                    "ENT. 2", "SAÍ. 2", "ENT. 3", "SAÍ. 3", "DURAÇÃO", "CH"
+                ]
+                valores_keys = [
+                    "dia", "marcacoes", "ent1", "sai1",
+                    "ent2", "sai2", "ent3", "sai3", "duracao", "ch"
+                ]
+                larguras = [18, 26, 10, 10, 10, 10, 10, 10, 10, 8]
+            else:
+                cabecalhos_visiveis = [
+                    "FUNCIONÁRIO", "CPF", "DIA", "MARCAÇÕES", "ENT. 1", "SAÍ. 1",
+                    "ENT. 2", "SAÍ. 2", "ENT. 3", "SAÍ. 3", "DURAÇÃO", "CH"
+                ]
+                valores_keys = [
+                    "nome", "cpf", "dia", "marcacoes", "ent1", "sai1",
+                    "ent2", "sai2", "ent3", "sai3", "duracao", "ch"
+                ]
+                larguras = [30, 16, 18, 26, 10, 10, 10, 10, 10, 10, 10, 8]
+
+            # ── Fills alternados (usados no resumo e na tabela) ──────────────
+            fill_par   = PatternFill("solid", fgColor="EBF5FB")
+            fill_impar = PatternFill("solid", fgColor="FFFFFF")
+
+            # ── Resumo ────────────────────────────────────────────────────────
+            cab_resumo = [
+                "NOME", "CPF", "PIS/PASEP", "CARGO", "ADMISSÃO",
+                "MATRÍCULA", "DEPARTAMENTO", "CENTRO DE CUSTO",
+                "DIAS TRABALHADOS", "MÉDIA HORAS/DIA"
             ]
-            for col, cabecalho in enumerate(cabecalhos, 1):
-                cell = ws.cell(row=1, column=col, value=cabecalho)
-                cell.font = cell.font.copy(bold=True)
+            larg_resumo = [35, 16, 14, 25, 12, 12, 22, 18, 16, 16]
 
-            # Dados
-            for row_idx, dia in enumerate(dados, 2):
-                ws.cell(row=row_idx, column=1, value=dia.get("nome", ""))
-                ws.cell(row=row_idx, column=2, value=dia.get("dia", ""))
-                ws.cell(row=row_idx, column=3, value=dia.get("marcacoes", ""))
-                ws.cell(row=row_idx, column=4, value=dia.get("ent1", ""))
-                ws.cell(row=row_idx, column=5, value=dia.get("sai1", ""))
-                ws.cell(row=row_idx, column=6, value=dia.get("ent2", ""))
-                ws.cell(row=row_idx, column=7, value=dia.get("sai2", ""))
-                ws.cell(row=row_idx, column=8, value=dia.get("ent3", ""))
-                ws.cell(row=row_idx, column=9, value=dia.get("sai3", ""))
-                ws.cell(row=row_idx, column=10, value=dia.get("duracao", ""))
-                ws.cell(row=row_idx, column=11, value=dia.get("ch", ""))
+            def linha_resumo(info, dias_lista):
+                trab        = dias_trabalhados(dias_lista)
+                total_dias  = len(trab)
+                total_horas = self._somar_duracoes([d.get("duracao", "") for d in trab])
+                media       = self._media_horas(total_horas, total_dias)
+                return [
+                    info.get("nome",         ""),
+                    info.get("cpf",          ""),
+                    info.get("pis",          ""),
+                    info.get("cargo",        ""),
+                    info.get("admissao",     ""),
+                    info.get("matricula",    ""),
+                    info.get("departamento", ""),
+                    info.get("centro_custo", ""),
+                    total_dias,
+                    media,
+                ]
 
-            # Ajustar largura
-            larguras = [30, 15, 25, 12, 12, 12, 12, 12, 12, 12, 10]
+            fill_resumo_cab = PatternFill("solid", fgColor="2E86C1")
+
+            if funcionario_unico:
+                # Resumo inline entre cabeçalho e tabela
+                ws.merge_cells(start_row=linha_atual, start_column=1,
+                               end_row=linha_atual, end_column=n_colunas_cab)
+                cel = ws.cell(row=linha_atual, column=1, value="RESUMO")
+                cel.font      = fonte_cab
+                cel.fill      = fill_resumo_cab
+                cel.alignment = Alignment(horizontal="center", vertical="center")
+                ws.row_dimensions[linha_atual].height = 20
+                linha_atual += 1
+
+                for col, cab in enumerate(cab_resumo, 1):
+                    cel = ws.cell(row=linha_atual, column=col, value=cab)
+                    cel.font      = fonte_cab
+                    cel.fill      = fill_resumo_cab
+                    cel.alignment = Alignment(horizontal="center", vertical="center")
+                    cel.border    = borda_fina
+                ws.row_dimensions[linha_atual].height = 18
+                linha_atual += 1
+
+                info_u  = list(todos_funcionarios.values())[0]
+                vals_r  = linha_resumo(info_u, info_u.get("_dias", dados))
+                for col, valor in enumerate(vals_r, 1):
+                    cel = ws.cell(row=linha_atual, column=col, value=valor)
+                    cel.fill      = fill_par
+                    cel.alignment = alinhamento
+                    cel.border    = borda_fina
+                linha_atual += 1
+
+                # Separador antes da tabela
+                for col_r in range(1, n_colunas_cab + 1):
+                    ws.cell(row=linha_atual, column=col_r).fill = PatternFill("solid", fgColor="FFFFFF")
+                ws.row_dimensions[linha_atual].height = 6
+                linha_atual += 1
+
+            else:
+                # Aba separada de Resumo para múltiplos funcionários
+                ws_resumo = wb.create_sheet("Resumo")
+
+                for col, cab in enumerate(cab_resumo, 1):
+                    cel = ws_resumo.cell(row=1, column=col, value=cab)
+                    cel.font      = fonte_cab
+                    cel.fill      = fill_cab
+                    cel.alignment = Alignment(horizontal="center", vertical="center")
+                ws_resumo.row_dimensions[1].height = 20
+
+                for row_r, (cpf, info) in enumerate(todos_funcionarios.items(), 2):
+                    vals_r = linha_resumo(info, info.get("_dias", []))
+                    fill   = fill_par if row_r % 2 == 0 else fill_impar
+                    for col, valor in enumerate(vals_r, 1):
+                        cel = ws_resumo.cell(row=row_r, column=col, value=valor)
+                        cel.fill      = fill
+                        cel.alignment = alinhamento
+                        cel.border    = borda_fina
+
+                for col, larg in enumerate(larg_resumo, 1):
+                    ws_resumo.column_dimensions[get_column_letter(col)].width = larg
+
+            # ── Cabeçalhos da tabela de ponto ────────────────────────────────
+            for col, cab in enumerate(cabecalhos_visiveis, 1):
+                cel = ws.cell(row=linha_atual, column=col, value=cab)
+                cel.font      = fonte_cab
+                cel.fill      = fill_cab
+                cel.alignment = Alignment(horizontal="center", vertical="center")
+                cel.border    = borda_fina
+            ws.row_dimensions[linha_atual].height = 20
+            linha_atual += 1
+
+            # ── Dados de ponto ───────────────────────────────────────────────
+            for i, dia in enumerate(dados):
+                fill = fill_par if i % 2 == 0 else fill_impar
+                col_dia = 1 if funcionario_unico else 3  # coluna DIA varia conforme o modo
+                for col, key in enumerate(valores_keys, 1):
+                    cel = ws.cell(row=linha_atual, column=col, value=dia.get(key, ""))
+                    cel.fill      = fill
+                    cel.alignment = alinhamento if col == col_dia else alinhamento_centro
+                    cel.border    = borda_fina
+                linha_atual += 1
+
+            # ── Larguras das colunas ─────────────────────────────────────────
             for col, largura in enumerate(larguras, 1):
-                ws.column_dimensions[ws.cell(row=1, column=col).column_letter].width = largura
+                ws.column_dimensions[get_column_letter(col)].width = largura
 
             wb.save(excel_path)
             self.log(f"Planilha salva: {excel_path}", "success")
 
-            # Mostrar mensagem de sucesso
             messagebox.showinfo(
                 "Sucesso",
                 f"Planilha Excel criada com sucesso!\n\n"
                 f"Arquivo: {Path(excel_path).name}\n"
                 f"Local: {Path(excel_path).parent}\n"
+                f"Funcionários: {len(todos_funcionarios)}\n"
                 f"Dias processados: {len(dados)}"
             )
 
         except Exception as e:
             self.log(f"Erro ao salvar Excel: {str(e)}", "error")
             messagebox.showerror("Erro", f"Não foi possível salvar a planilha:\n{str(e)}")
+
+    def _gerar_nome_arquivo(self, dados, todos_funcionarios):
+        """Gera o nome sugerido para o arquivo Excel com base no cenário."""
+        MESES = {
+            1:"Jan", 2:"Fev", 3:"Mar", 4:"Abr", 5:"Mai", 6:"Jun",
+            7:"Jul", 8:"Ago", 9:"Set", 10:"Out", 11:"Nov", 12:"Dez"
+        }
+
+        def nome_curto(nome_completo):
+            partes = nome_completo.strip().split()
+            return f"{partes[0]}_{partes[-1]}" if len(partes) > 1 else partes[0]
+
+        def mes_ano_dos_dias(dias_lista):
+            """Detecta mês/ano predominante nas datas dos dias."""
+            try:
+                datas = [d.get("dia", "").split(" ")[0] for d in dias_lista if d.get("dia")]
+                from collections import Counter
+                meses_anos = []
+                for data in datas:
+                    partes = data.split("/")
+                    if len(partes) == 3:
+                        meses_anos.append((int(partes[1]), int(partes[2])))
+                if not meses_anos:
+                    return None
+                mes, ano = Counter(meses_anos).most_common(1)[0][0]
+                return f"{MESES[mes]}{ano}"
+            except Exception:
+                return None
+
+        num_funcionarios = len(todos_funcionarios)
+
+        if num_funcionarios == 1:
+            info   = list(todos_funcionarios.values())[0]
+            nc     = nome_curto(info.get("nome", "Funcionario"))
+            dias_f = info.get("_dias", dados)
+
+            if len(self.pdf_paths) == 1:
+                # 1 arquivo, 1 funcionário → inclui mês
+                mes_ano = mes_ano_dos_dias(dias_f)
+                sufixo  = f"_{mes_ano}" if mes_ano else ""
+                return f"Ponto_{nc}{sufixo}.xlsx"
+            else:
+                # N arquivos, mesmo funcionário → sem mês (ambíguo)
+                return f"Ponto_{nc}.xlsx"
+        else:
+            # N funcionários diferentes → contagem + timestamp do mês atual
+            mes_ano = MESES[datetime.now().month] + str(datetime.now().year)
+            return f"Ponto_{num_funcionarios}Funcionarios_{mes_ano}.xlsx"
+
+    def _somar_duracoes(self, duracoes):
+        """Soma uma lista de strings 'HH:MM' e retorna o total em 'HH:MM'."""
+        total_min = 0
+        for d in duracoes:
+            if not d or ":" not in d:
+                continue
+            try:
+                h, m = d.strip().split(":")
+                total_min += int(h) * 60 + int(m)
+            except ValueError:
+                continue
+        return f"{total_min // 60:02d}:{total_min % 60:02d}"
+
+    def _media_horas(self, total_horas, total_dias):
+        """Calcula a média de horas por dia a partir de 'HH:MM' e quantidade de dias."""
+        if not total_dias or ":" not in total_horas:
+            return "00:00"
+        try:
+            h, m = total_horas.split(":")
+            total_min = int(h) * 60 + int(m)
+            media_min = total_min // total_dias
+            return f"{media_min // 60:02d}:{media_min % 60:02d}"
+        except ValueError:
+            return "00:00"
+
+    def separar_pdf_por_funcionario(self):
+        """Abre um PDF com múltiplos funcionários e gera um ZIP com um PDF por funcionário."""
+        pdf_path = filedialog.askopenfilename(
+            title="Selecionar PDF com múltiplos funcionários",
+            filetypes=[("Arquivos PDF", "*.pdf")],
+            initialdir=self.dir_abrir_pdf
+        )
+        if not pdf_path:
+            return
+
+        self.dir_abrir_pdf = str(Path(pdf_path).parent)
+        self.salvar_configuracoes(silencioso=True)
+
+        zip_path = filedialog.asksaveasfilename(
+            title="Salvar ZIP com PDFs separados",
+            defaultextension=".zip",
+            initialfile=f"{Path(pdf_path).stem}_separados.zip",
+            initialdir=self.dir_salvar_excel,
+            filetypes=[("Arquivo ZIP", "*.zip")]
+        )
+        if not zip_path:
+            return
+
+        self.log("Iniciando separação de PDF por funcionário...", "processing")
+        import threading
+        t = threading.Thread(
+            target=self._separar_pdf_worker,
+            args=(pdf_path, zip_path),
+            daemon=True
+        )
+        t.start()
+
+    def _separar_pdf_worker(self, pdf_path, zip_path):
+        """Thread que separa o PDF e gera o ZIP."""
+        try:
+            # Detectar grupos de páginas por funcionário
+            grupos = []
+            grupo_atual = None
+
+            with pdfplumber.open(pdf_path) as pdf:
+                for i, pagina in enumerate(pdf.pages):
+                    texto = pagina.extract_text() or ""
+                    match = re.search(r'NOME:\s*(.+?)\s+PIS/PASEP:', texto, re.IGNORECASE)
+                    if match:
+                        nome = match.group(1).strip()
+                        grupo_atual = {"nome": nome, "paginas": [i]}
+                        grupos.append(grupo_atual)
+                    elif grupo_atual:
+                        grupo_atual["paginas"].append(i)
+
+            if not grupos:
+                self.root.after(0, lambda: (
+                    self.log("⚠️ Nenhum funcionário identificado no PDF.", "error"),
+                    messagebox.showwarning("Atenção", "Nenhum funcionário identificado no PDF.")
+                ))
+                return
+
+            if len(grupos) == 1:
+                self.root.after(0, lambda: (
+                    self.log("⚠️ O PDF contém apenas um funcionário — separação desnecessária.", "error"),
+                    messagebox.showwarning("Atenção", "O PDF contém apenas um funcionário.")
+                ))
+                return
+
+            self.log(f"  {len(grupos)} funcionário(s) detectado(s). Gerando PDFs...", "processing")
+
+            # Gerar um PDF por funcionário e compactar no ZIP
+            reader = pypdf.PdfReader(pdf_path)
+
+            def nome_para_arquivo(nome):
+                """Sanitiza o nome para uso em nome de arquivo."""
+                import unicodedata
+                nfkd = unicodedata.normalize("NFKD", nome)
+                ascii_nome = nfkd.encode("ASCII", "ignore").decode()
+                return re.sub(r"[^\w\s-]", "", ascii_nome).strip().replace(" ", "_")
+
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                nomes_usados = {}
+                for grupo in grupos:
+                    writer = pypdf.PdfWriter()
+                    for idx_pagina in grupo["paginas"]:
+                        writer.add_page(reader.pages[idx_pagina])
+
+                    nome_base = nome_para_arquivo(grupo["nome"])
+
+                    # Evitar colisão de nomes
+                    if nome_base in nomes_usados:
+                        nomes_usados[nome_base] += 1
+                        nome_arquivo = f"{nome_base}_{nomes_usados[nome_base]}.pdf"
+                    else:
+                        nomes_usados[nome_base] = 1
+                        nome_arquivo = f"{nome_base}.pdf"
+
+                    import io
+                    buffer = io.BytesIO()
+                    writer.write(buffer)
+                    zf.writestr(nome_arquivo, buffer.getvalue())
+
+                    self.log(f"  ✓ {grupo['nome']} → {nome_arquivo} "
+                             f"({len(grupo['paginas'])} página(s))", "success")
+
+            self.root.after(0, lambda: (
+                self.log(f"\n✅ ZIP gerado com sucesso: {zip_path}", "success"),
+                messagebox.showinfo(
+                    "Concluído",
+                    f"PDFs separados com sucesso!\n\n"
+                    f"Funcionários: {len(grupos)}\n"
+                    f"Arquivo: {Path(zip_path).name}\n"
+                    f"Local: {Path(zip_path).parent}"
+                )
+            ))
+
+        except PermissionError:
+            self.root.after(0, lambda: (
+                self.log("✗ Sem permissão para ler o PDF ou salvar o ZIP.", "error"),
+                messagebox.showerror("Erro", "Sem permissão para acessar o arquivo.")
+            ))
+        except Exception as e:
+            self.root.after(0, lambda: (
+                self.log(f"✗ Erro ao separar PDF: {str(e)}", "error"),
+                messagebox.showerror("Erro", f"Erro ao separar PDF:\n{str(e)}")
+            ))
 
     def iniciar_processamento(self):
         """Inicia o processamento em thread separada."""

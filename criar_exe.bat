@@ -11,6 +11,7 @@ echo.
 echo Gerando executavel com PyInstaller...
 python -m PyInstaller --clean --onefile --windowed --name "Control ID Reader" ^
     --collect-all pdfplumber ^
+    --collect-all pypdf ^
     --collect-all openpyxl ^
     --collect-all bs4 ^
     --collect-all customtkinter ^
