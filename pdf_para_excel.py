@@ -1,19 +1,37 @@
-import os
-import zipfile
-import email as email_lib
 import pdfplumber
-import pypdf
 from bs4 import BeautifulSoup
 from pathlib import Path
-from openpyxl import Workbook
-import re
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 import customtkinter as ctk
 from datetime import datetime
 import threading
-import json
-import os
+import time
+
+from control_id_reader import APP_VERSION
+from control_id_reader.audit import analyze_inconsistencies, build_preview_summary
+from control_id_reader.config_store import default_config_path, load_config, save_config
+from control_id_reader.excel_writer import generate_suggested_filename, save_excel_file
+from control_id_reader.parsers import (
+    extract_employee_info_from_mhtml,
+    extract_employee_info_from_text,
+    extract_html_from_mhtml,
+    extract_pdf_employees,
+    extract_punch_rows_from_mhtml,
+    extract_punch_rows_from_tables,
+)
+from control_id_reader.pdf_splitter import detect_employee_page_groups, write_employee_zip
+from control_id_reader.privacy import (
+    PrivacyError,
+    anonymize_excel_file,
+    restore_excel_file,
+    suggest_anonymized_path,
+    suggest_key_path,
+    suggest_restored_path,
+)
+from control_id_reader.utils import (
+    formatar_cpf,
+)
 
 
 class PdfToExcelApp:
@@ -21,10 +39,10 @@ class PdfToExcelApp:
 
     def __init__(self, root):
         self.root = root
-        self.root.title("Control ID Reader - Conversor de Ponto")
-        self.root.geometry("820x680")
+        self.root.title(f"Control ID Reader {APP_VERSION} - Conversor de Ponto")
+        self.root.geometry("700x780")
         self.root.resizable(True, True)
-        self.root.minsize(700, 580)
+        self.root.minsize(700, 780)
 
         # Tema padrão
         ctk.set_appearance_mode("dark")
@@ -39,6 +57,10 @@ class PdfToExcelApp:
         # Variáveis de estado
         self.pdf_paths = []
         self.processamento_ativo = False
+        self.separacao_ativa = False
+        self.privacidade_ativa = False
+        self._elapsed_log_stop_event = None
+        self._elapsed_log_interval = 5
         self._tema_atual = "dark"
 
         # Diretórios padrão (serão sobrescritos pelas configurações salvas)
@@ -111,7 +133,8 @@ class PdfToExcelApp:
         main_frame = ctk.CTkFrame(self.root, fg_color="transparent")
         main_frame.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
         main_frame.columnconfigure(0, weight=1)
-        main_frame.rowconfigure(2, weight=1)  # log expande verticalmente
+        main_frame.rowconfigure(1, weight=1)
+        main_frame.rowconfigure(2, weight=1)
 
         # ── Cabeçalho ───────────────────────────────────────────
         header = ctk.CTkFrame(main_frame, fg_color="transparent")
@@ -142,25 +165,27 @@ class PdfToExcelApp:
     def criar_secao_selecao(self, parent, row):
         """Cria a seção para seleção de arquivos."""
         frame = ctk.CTkFrame(parent)
-        frame.grid(row=row, column=0, sticky="ew", pady=(0, 8))
+        frame.grid(row=row, column=0, sticky="nsew", pady=(0, 6))
         frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(1, weight=1)
 
         ctk.CTkLabel(frame, text="Seleção de Arquivos",
                      font=ctk.CTkFont(size=13, weight="bold")
-                     ).grid(row=0, column=0, sticky="w", padx=14, pady=(10, 6))
+                     ).grid(row=0, column=0, sticky="w", padx=12, pady=(6, 3))
 
         # Lista de arquivos (tk.Listbox ainda não tem substituto CTk nativo)
         list_frame = ctk.CTkFrame(frame, fg_color="transparent")
-        list_frame.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 4))
+        list_frame.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 2))
         list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
 
         self.lista_arquivos = tk.Listbox(
-            list_frame, height=5, selectmode=tk.EXTENDED,
+            list_frame, height=20, selectmode=tk.EXTENDED,
             font=("Segoe UI", 9), relief="flat", borderwidth=0,
             activestyle="none", selectbackground="#1f6aa5",
             selectforeground="white"
         )
-        self.lista_arquivos.grid(row=0, column=0, sticky="ew")
+        self.lista_arquivos.grid(row=0, column=0, sticky="nsew")
 
         scrollbar = ctk.CTkScrollbar(list_frame, command=self.lista_arquivos.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
@@ -168,28 +193,34 @@ class PdfToExcelApp:
 
         # Botões
         btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
-        btn_frame.grid(row=2, column=0, sticky="w", padx=12, pady=(4, 4))
+        btn_frame.grid(row=2, column=0, sticky="w", padx=12, pady=(2, 2))
 
-        ctk.CTkButton(btn_frame, text="+ Adicionar Arquivos", width=160,
-                      fg_color="#27ae60", hover_color="#1e8449",
-                      command=self.adicionar_pdfs
-                      ).grid(row=0, column=0, padx=(0, 6))
+        self.btn_adicionar = ctk.CTkButton(
+            btn_frame, text="+ Adicionar Arquivos", width=160,
+            fg_color="#27ae60", hover_color="#1e8449",
+            command=self.adicionar_pdfs
+        )
+        self.btn_adicionar.grid(row=0, column=0, padx=(0, 6))
 
-        ctk.CTkButton(btn_frame, text="✕ Remover Selecionados", width=170,
-                      fg_color="#e67e22", hover_color="#ca6f1e",
-                      command=self.remover_selecionados
-                      ).grid(row=0, column=1, padx=(0, 6))
+        self.btn_remover = ctk.CTkButton(
+            btn_frame, text="✕ Remover Selecionados", width=170,
+            fg_color="#e67e22", hover_color="#ca6f1e",
+            command=self.remover_selecionados
+        )
+        self.btn_remover.grid(row=0, column=1, padx=(0, 6))
 
-        ctk.CTkButton(btn_frame, text="🗑  Limpar Tudo", width=130,
-                      fg_color="#c0392b", hover_color="#a93226",
-                      command=self.limpar_lista
-                      ).grid(row=0, column=2)
+        self.btn_limpar = ctk.CTkButton(
+            btn_frame, text="🗑  Limpar Tudo", width=130,
+            fg_color="#c0392b", hover_color="#a93226",
+            command=self.limpar_lista
+        )
+        self.btn_limpar.grid(row=0, column=2)
 
         self.info_arquivos = ctk.CTkLabel(
             frame, text="Nenhum arquivo selecionado",
             font=ctk.CTkFont(size=11), text_color=("gray40", "gray60")
         )
-        self.info_arquivos.grid(row=3, column=0, sticky="w", padx=14, pady=(0, 10))
+        self.info_arquivos.grid(row=3, column=0, sticky="w", padx=12, pady=(0, 6))
 
     def criar_secao_status(self, parent, row):
         """Cria a seção de log/status."""
@@ -203,7 +234,7 @@ class PdfToExcelApp:
                      ).grid(row=0, column=0, sticky="w", padx=14, pady=(10, 6))
 
         self.log_text = tk.Text(
-            frame, height=9, wrap=tk.WORD,
+            frame, height=20, wrap=tk.WORD,
             font=("Consolas", 9), relief="flat", borderwidth=0,
             padx=8, pady=6
         )
@@ -220,6 +251,8 @@ class PdfToExcelApp:
         frame = ctk.CTkFrame(parent, fg_color="transparent")
         frame.grid(row=row, column=0, sticky="ew", pady=(4, 0))
         frame.columnconfigure(0, weight=1)
+        button_width = 220
+        button_height = 40
 
         # Barra de progresso
         self.progress_var = tk.DoubleVar()
@@ -227,39 +260,57 @@ class PdfToExcelApp:
                                                height=10)
         self.progress_bar.set(0)
         self.progress_bar.grid(row=0, column=0, columnspan=3, sticky="ew",
-                               pady=(0, 10))
-
-        # Botão principal
-        self.btn_processar = ctk.CTkButton(
-            frame, text="⚡  Gerar Planilha Excel",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            height=40, fg_color="#2980b9", hover_color="#2471a3",
-            command=self.iniciar_processamento
-        )
-        self.btn_processar.grid(row=1, column=0, sticky="w")
-
-        # Botão secundário
-        ctk.CTkButton(
-            frame, text="💾  Salvar Configurações",
-            height=40, width=180,
-            fg_color=("gray75", "gray30"), text_color=("gray10", "gray90"),
-            hover_color=("gray65", "gray40"),
-            command=self.salvar_configuracoes
-        ).grid(row=1, column=1, padx=(10, 0), sticky="w")
-
-        ctk.CTkButton(
-            frame, text="✂️  Separar PDF por Funcionário",
-            height=40, width=220,
-            fg_color="#7d3c98", hover_color="#6c3483",
-            command=self.separar_pdf_por_funcionario
-        ).grid(row=1, column=2, padx=(10, 0), sticky="w")
+                               pady=(0, 6))
 
         self.status_final = ctk.CTkLabel(
             frame, text="",
             font=ctk.CTkFont(size=11), text_color=("gray40", "gray60")
         )
-        self.status_final.grid(row=2, column=0, columnspan=3,
-                               sticky="w", pady=(8, 0))
+        self.status_final.grid(row=1, column=0, columnspan=3,
+                               sticky="w", pady=(0, 8))
+
+        # Botão principal
+        self.btn_processar = ctk.CTkButton(
+            frame, text="⚡  Gerar Planilha Excel",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            height=button_height, width=button_width,
+            fg_color="#2980b9", hover_color="#2471a3",
+            command=self.iniciar_processamento
+        )
+        self.btn_processar.grid(row=2, column=0, sticky="w")
+
+        self.btn_anonimizar = ctk.CTkButton(
+            frame, text="🔒  Anonimizar Planilha",
+            height=button_height, width=button_width,
+            fg_color="#16a085", hover_color="#138d75",
+            command=self.anonimizar_planilha
+        )
+        self.btn_anonimizar.grid(row=2, column=1, padx=(10, 0), sticky="w")
+
+        self.btn_separar_pdf = ctk.CTkButton(
+            frame, text="✂️  Separar PDF por Funcionário",
+            height=button_height, width=button_width,
+            fg_color="#7d3c98", hover_color="#6c3483",
+            command=self.separar_pdf_por_funcionario
+        )
+        self.btn_separar_pdf.grid(row=2, column=2, padx=(10, 0), sticky="w")
+
+        self.btn_salvar_config = ctk.CTkButton(
+            frame, text="💾  Salvar Configurações",
+            height=button_height, width=button_width,
+            fg_color=("gray75", "gray30"), text_color=("gray10", "gray90"),
+            hover_color=("gray65", "gray40"),
+            command=self.salvar_configuracoes
+        )
+        self.btn_salvar_config.grid(row=3, column=0, sticky="w", pady=(8, 0))
+
+        self.btn_restaurar = ctk.CTkButton(
+            frame, text="🔓  Restaurar Dados",
+            height=button_height, width=button_width,
+            fg_color="#8e44ad", hover_color="#7d3c98",
+            command=self.restaurar_planilha
+        )
+        self.btn_restaurar.grid(row=3, column=1, padx=(10, 0), sticky="w", pady=(8, 0))
 
     def adicionar_pdfs(self):
         """Abre dialog para selecionar arquivos PDF ou MHTML."""
@@ -311,97 +362,208 @@ class PdfToExcelApp:
             self.log_text.see(tk.END)
         self.root.after(0, _inserir)
 
+    def _start_elapsed_log(self, mensagem, tipo="processing", intervalo=None):
+        """Registra no log o tempo decorrido de uma operação longa."""
+        self._stop_elapsed_log()
+        intervalo = intervalo or self._elapsed_log_interval
+        stop_event = threading.Event()
+        self._elapsed_log_stop_event = stop_event
+        inicio = time.monotonic()
+
+        def registrar_tempo():
+            while not stop_event.wait(intervalo):
+                decorrido = int(time.monotonic() - inicio)
+                self.log(f"{mensagem} em andamento há {self._formatar_tempo_decorrido(decorrido)}.", tipo)
+
+        threading.Thread(target=registrar_tempo, daemon=True).start()
+
+    def _stop_elapsed_log(self, mensagem_final=None, tipo="processing", status_final=None):
+        if self._elapsed_log_stop_event:
+            self._elapsed_log_stop_event.set()
+            self._elapsed_log_stop_event = None
+        if mensagem_final is not None:
+            self.log(mensagem_final, tipo)
+        if status_final is not None:
+            self.root.after(0, lambda: self.status_final.configure(text=status_final))
+
+    def _formatar_tempo_decorrido(self, segundos):
+        minutos, seg = divmod(max(0, segundos), 60)
+        if minutos:
+            return f"{minutos}min {seg:02d}s"
+        return f"{seg}s"
+
+    def _set_progress(self, valor, status=None):
+        """Atualiza barra e status a partir da thread principal."""
+        def _aplicar():
+            self.progress_bar.set(valor)
+            if status is not None:
+                self.status_final.configure(text=status)
+        self.root.after(0, _aplicar)
+
+    def _set_acoes_habilitadas(self, habilitado):
+        """Habilita ou desabilita ações que não devem concorrer com processamento."""
+        estado = "normal" if habilitado else "disabled"
+        self.btn_adicionar.configure(state=estado)
+        self.btn_remover.configure(state=estado)
+        self.btn_limpar.configure(state=estado)
+        self.btn_processar.configure(state=estado)
+        self.btn_salvar_config.configure(state=estado)
+        self.btn_separar_pdf.configure(state=estado)
+        self.btn_anonimizar.configure(state=estado)
+        self.btn_restaurar.configure(state=estado)
+        self.lista_arquivos.configure(state=estado)
+
+    def _finalizar_separacao_ui(self, status=None):
+        """Restaura a UI depois da separação de PDF."""
+        def _aplicar():
+            self.separacao_ativa = False
+            self._set_acoes_habilitadas(True)
+            if status is not None:
+                self.status_final.configure(text=status)
+        self.root.after(0, _aplicar)
+
     def _finalizar_processamento(self, todos_dias, total_pdfs, total_dias, todos_funcionarios):
         """Chamado na thread principal ao fim do processamento para abrir o filedialog."""
         self.processamento_ativo = False
-        self.btn_processar.configure(state="normal")
         if todos_dias:
-            self.salvar_excel(todos_dias, todos_funcionarios)
-            self.log(f"\n✅ Processamento concluído!", "success")
-            self.log(f"Total: {total_pdfs} arquivo(s), {total_dias} dia(s) registrado(s)", "success")
+            inconsistencias = analyze_inconsistencies(todos_dias, todos_funcionarios)
+            if not self._mostrar_pre_visualizacao(todos_dias, todos_funcionarios, inconsistencias, total_pdfs):
+                self.log("Exportação cancelada na pré-visualização.", "info")
+                self.status_final.configure(text="Processamento concluído; exportação cancelada.")
+                self._set_acoes_habilitadas(True)
+                return
+
+            if self.salvar_excel(todos_dias, todos_funcionarios, inconsistencias):
+                self.log(f"\n✅ Processamento concluído!", "success")
+                self.log(f"Total: {total_pdfs} arquivo(s), {total_dias} dia(s) registrado(s)", "success")
+                if inconsistencias:
+                    self.log(f"Inconsistências registradas: {len(inconsistencias)}", "processing")
+                self.status_final.configure(
+                    text=f"Concluído: {total_pdfs} arquivo(s), {total_dias} dia(s)."
+                )
+            else:
+                self.status_final.configure(text="Processamento concluído; salvamento cancelado.")
+            self._set_acoes_habilitadas(True)
         else:
             self.log("\n⚠️ Nenhum dado foi extraído dos arquivos.", "error")
+            self.status_final.configure(text="Nenhum dado foi extraído.")
+            self._set_acoes_habilitadas(True)
+
+    def _mostrar_pre_visualizacao(self, dados, todos_funcionarios, inconsistencias, total_pdfs):
+        """Mostra uma janela de pré-visualização e retorna True se o usuário confirmar."""
+        resumo = build_preview_summary(dados, todos_funcionarios, inconsistencias)
+        resultado = {"confirmado": False}
+
+        janela = ctk.CTkToplevel(self.root)
+        janela.title("Pré-visualização da exportação")
+        janela.geometry("760x560")
+        janela.minsize(680, 480)
+        janela.transient(self.root)
+        janela.grab_set()
+
+        frame = ctk.CTkFrame(janela)
+        frame.pack(fill="both", expand=True, padx=16, pady=16)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(2, weight=1)
+
+        ctk.CTkLabel(
+            frame,
+            text="Pré-visualização",
+            font=ctk.CTkFont(size=18, weight="bold"),
+        ).grid(row=0, column=0, sticky="w", padx=12, pady=(12, 4))
+
+        texto_resumo = (
+            f"Arquivos: {total_pdfs}    "
+            f"Funcionários: {resumo['total_funcionarios']}    "
+            f"Dias: {resumo['total_dias']}    "
+            f"Trabalhados: {resumo['total_dias_trabalhados']}    "
+            f"Faltados: {resumo['total_dias_faltados']}    "
+            f"Dias de trabalho: {resumo['total_dias_trabalho']}    "
+            f"Inconsistências: {resumo['total_inconsistencias']}"
+        )
+        ctk.CTkLabel(
+            frame,
+            text=texto_resumo,
+            font=ctk.CTkFont(size=12),
+            text_color=("gray30", "gray75"),
+        ).grid(row=1, column=0, sticky="w", padx=12, pady=(0, 8))
+
+        preview = ctk.CTkTextbox(frame, wrap="word")
+        preview.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        preview.insert("end", self._texto_pre_visualizacao(resumo, inconsistencias))
+        preview.configure(state="disabled")
+
+        botoes = ctk.CTkFrame(frame, fg_color="transparent")
+        botoes.grid(row=3, column=0, sticky="e", padx=12, pady=(0, 12))
+
+        def cancelar():
+            resultado["confirmado"] = False
+            janela.destroy()
+
+        def confirmar():
+            resultado["confirmado"] = True
+            janela.destroy()
+
+        ctk.CTkButton(
+            botoes,
+            text="Cancelar",
+            width=120,
+            fg_color=("gray75", "gray30"),
+            text_color=("gray10", "gray90"),
+            hover_color=("gray65", "gray40"),
+            command=cancelar,
+        ).grid(row=0, column=0, padx=(0, 8))
+
+        ctk.CTkButton(
+            botoes,
+            text="Gerar Excel",
+            width=140,
+            fg_color="#27ae60",
+            hover_color="#1e8449",
+            command=confirmar,
+        ).grid(row=0, column=1)
+
+        janela.protocol("WM_DELETE_WINDOW", cancelar)
+        janela.wait_window()
+        return resultado["confirmado"]
+
+    def _texto_pre_visualizacao(self, resumo, inconsistencias):
+        linhas = ["FUNCIONÁRIOS", ""]
+        for funcionario in resumo["funcionarios"]:
+            cpf = funcionario["cpf"] or "CPF não identificado"
+            linhas.append(
+                f"- {funcionario['nome'] or 'Sem nome'} | {cpf} | "
+                f"{funcionario['dias']} dia(s), "
+                f"{funcionario['dias_trabalhados']} trabalhado(s), "
+                f"{funcionario['dias_faltados']} faltado(s), "
+                f"{funcionario['dias_trabalho_totais']} dia(s) de trabalho"
+            )
+
+        linhas.extend(["", "INCONSISTÊNCIAS", ""])
+        if not inconsistencias:
+            linhas.append("Nenhuma inconsistência encontrada.")
+        else:
+            por_severidade = resumo["inconsistencias_por_severidade"]
+            resumo_severidade = ", ".join(
+                f"{sev}: {qtd}" for sev, qtd in sorted(por_severidade.items())
+            )
+            linhas.append(resumo_severidade)
+            linhas.append("")
+            for issue in inconsistencias[:80]:
+                trecho_dia = f" | {issue['dia']}" if issue.get("dia") else ""
+                linhas.append(
+                    f"[{issue['severidade']}] {issue.get('funcionario') or 'Sem funcionário'}"
+                    f"{trecho_dia} | {issue['campo']}: {issue['mensagem']}"
+                )
+            if len(inconsistencias) > 80:
+                linhas.append(f"... mais {len(inconsistencias) - 80} inconsistência(s).")
+
+        return "\n".join(linhas)
 
     def extrair_info_funcionario(self, texto):
         """Extrai informações do funcionário a partir do texto de um arquivo.
         Retorna (dict, motivo_falha). motivo_falha é None em caso de sucesso."""
-        info = {}
-
-        if not texto or not texto.strip():
-            return info, "texto do arquivo está vazio"
-
-        # EMPRESA e CNPJ na mesma linha
-        match = re.search(r'EMPRESA:\s*(.+?)\s*CNPJ:\s*(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})',
-                         texto, re.IGNORECASE)
-        if match:
-            info["empresa"] = match.group(1).strip()
-            info["cnpj"] = match.group(2).strip()
-        else:
-            match = re.search(r'EMPRESA:\s*([^\n]+)', texto, re.IGNORECASE)
-            if match:
-                info["empresa"] = match.group(1).strip()
-            match = re.search(r'CNPJ:\s*(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})', texto, re.IGNORECASE)
-            if match:
-                info["cnpj"] = match.group(1).strip()
-
-        # ENDEREÇO
-        match = re.search(r'ENDERE[Ç]O:\s*(.+?)(?:\n|$)', texto, re.IGNORECASE)
-        if match:
-            info["endereco"] = match.group(1).strip()
-
-        # NOME
-        match = re.search(r'NOME:\s*(.+?)\s+PIS/PASEP:', texto, re.IGNORECASE)
-        if match:
-            info["nome"] = match.group(1).strip()
-
-        # PIS/PASEP
-        match = re.search(r'PIS/PASEP:\s*(\d+)', texto, re.IGNORECASE)
-        if match:
-            info["pis"] = match.group(1).strip()
-
-        # ADMISSÃO
-        match = re.search(r'ADMISS[Ã]O:\s*(\d{2}/\d{2}/\d{4})', texto, re.IGNORECASE)
-        if match:
-            info["admissao"] = match.group(1).strip()
-
-        # CPF
-        match = re.search(r'CPF:\s*(\d+)', texto, re.IGNORECASE)
-        if match:
-            info["cpf"] = match.group(1).strip()
-
-        # MATRÍCULA
-        match = re.search(r'MATR[Í]CULA:\s*(\d+)', texto, re.IGNORECASE)
-        if match:
-            info["matricula"] = match.group(1).strip()
-
-        # CENTRO DE CUSTO
-        match = re.search(r'CENTRO DE CUSTO:\s*(\S+)', texto, re.IGNORECASE)
-        if match:
-            info["centro_custo"] = match.group(1).strip()
-
-        # DEPARTAMENTO
-        match = re.search(r'DEPARTAMENTO:\s*(\S+)', texto, re.IGNORECASE)
-        if match:
-            info["departamento"] = match.group(1).strip()
-
-        # CARGO
-        match = re.search(r'CARGO:\s*(.+?)(?:\n|$)', texto, re.IGNORECASE)
-        if match:
-            info["cargo"] = match.group(1).strip()
-
-        # Fix 6: retornar motivo específico se nome não foi encontrado
-        if not info.get("nome"):
-            tem_empresa = "empresa" in info
-            tem_cpf     = "cpf" in info
-            if not tem_empresa and not tem_cpf:
-                motivo = "nenhum campo reconhecido — formato do arquivo pode ser diferente do esperado"
-            elif tem_empresa and not tem_cpf:
-                motivo = "empresa identificada mas campo NOME não encontrado no padrão 'NOME: ... PIS/PASEP:'"
-            else:
-                motivo = "campo NOME não encontrado no padrão esperado"
-            return info, motivo
-
-        return info, None
+        return extract_employee_info_from_text(texto)
 
     def extrair_dados_ponto(self, tabelas):
         """Extrai dados de ponto e horários contratuais de uma lista de tabelas.
@@ -411,131 +573,7 @@ class PdfToExcelApp:
         - ent2/sai2 podem estar mesclados em [4] ou divididos por pdfplumber
         - CH (5 dígitos) e duração (HH:MM) são localizados por valor, não por índice fixo
         """
-        dias = []
-        horarios_contratuais = []
-        capturando_horarios  = False
-
-        TIME_RE = re.compile(r'^\d{1,2}:\d{2}$')
-        CH_RE   = re.compile(r'^\d{5}$')
-        # Padrão de linha de dia: deve começar com DD/MM/AA - DIA_SEMANA
-        DAY_RE  = re.compile(r'^\d{2}/\d{2}/\d{2,4}\s*-\s*(SEG|TER|QUA|QUI|SEX|SAB|DOM)', re.IGNORECASE)
-
-        MARCADORES_FIM = [
-            "horários contratuais", "horarios contratuais",
-            "código do horário",    "codigo do horario",
-        ]
-
-        def is_time(s): return bool(s and TIME_RE.match(str(s).strip()))
-        def is_ch(s):   return bool(s and CH_RE.match(str(s).strip()))
-        def cel(i):     return str(row[i]).strip() if i < len(row) and row[i] else ""
-
-        for row in tabelas:
-            if not row:
-                continue
-
-            linha_texto = " ".join(str(c) for c in row if c).lower()
-
-            # ── Horários Contratuais ──────────────────────────────────────────
-            if any(m in linha_texto for m in MARCADORES_FIM):
-                capturando_horarios = True
-                continue
-
-            if capturando_horarios:
-                codigo = cel(0)
-                if codigo:
-                    horario = {"codigo": codigo}
-                    par = 1
-                    col_h = 2
-                    while col_h < len(row):
-                        ent = cel(col_h)
-                        sai = cel(col_h + 2) if col_h + 2 < len(row) else ""
-                        if ent or sai:
-                            horario[f"ent{par}"] = ent
-                            horario[f"sai{par}"] = sai
-                            par += 1
-                        col_h += 4
-                    horarios_contratuais.append(horario)
-                continue
-
-            # ── Linha de dia: deve ter formato DD/MM/AA - DIA ─────────────────
-            if not (row[0] and DAY_RE.match(str(row[0]).strip())):
-                continue
-
-            dia = {
-                "dia":       str(row[0]).strip(),
-                "marcacoes": cel(1),
-                "ent1":      cel(2),
-                "sai1":      cel(3),
-                "ent2": "", "sai2": "",
-                "ent3": "", "sai3": "",
-                "duracao":   "",
-                "ch":        "",
-            }
-
-            # ── ent2 / sai2: detectar mescla e tempo dividido ─────────────────
-            cel4_raw = cel(4)
-            cel5_raw = cel(5)
-
-            # Reconstituir tempo dividido pelo pdfplumber: "19:00 00" + ":05" → "19:00" + "00:05"
-            if cel5_raw.startswith(":") and cel4_raw:
-                parts4 = cel4_raw.split()
-                if parts4:
-                    hours_part  = parts4[-1]
-                    cel4_raw    = " ".join(parts4[:-1])
-                    cel5_raw    = f"{hours_part}{cel5_raw}"  # "00" + ":05" → "00:05"
-
-            # Verificar quantos valores HH:MM existem em cel4_raw
-            time_parts4 = [p for p in cel4_raw.split() if is_time(p)] if cel4_raw else []
-
-            if len(time_parts4) >= 2:
-                # ent2 e sai2 mesclados em [4]
-                dia["ent2"] = time_parts4[0]
-                dia["sai2"] = time_parts4[1]
-                merged = True
-            else:
-                dia["ent2"] = cel4_raw if is_time(cel4_raw) else ""
-                dia["sai2"] = cel5_raw if is_time(cel5_raw) else ""
-                merged = False
-
-            # ── Localizar CH e duração por valor semântico ────────────────────
-            # CH é sempre um código de 5 dígitos (ex: "00021")
-            # Duração é HH:MM imediatamente antes do CH
-            # Percorre posições de maior para menor índice para pegar o CH mais à direita
-            ch_positions = [9, 8, 7, 6, 5] if not merged else [7, 6, 5]
-
-            found = False
-            for ch_i in ch_positions:
-                v = cel(ch_i)
-                if is_ch(v):
-                    dia["ch"] = v
-                    prev = cel(ch_i - 1)
-                    if is_time(prev):
-                        dia["duracao"] = prev
-                    # Formato B completo (CH em [9]): extrair ent3/sai3
-                    if ch_i == 9:
-                        dia["ent3"] = cel(6)
-                        dia["sai3"] = cel(7)
-                    found = True
-                    break
-
-            if not found:
-                # CH ausente — determinar contexto pelo índice [9]
-                # Formato B tem CH em [9] → duração em [8], ent3/sai3 em [6]/[7]
-                # Formato A tem I/P/D em [9] → duração em [6], nada mais
-                is_format_b = is_ch(cel(9))
-                search_order = [8, 7, 6] if is_format_b else [6, 7, 8]
-
-                for dur_i in search_order:
-                    if is_time(cel(dur_i)):
-                        dia["duracao"] = cel(dur_i)
-                        if dur_i == 8 and is_format_b:
-                            dia["ent3"] = cel(6)
-                            dia["sai3"] = cel(7)
-                        break
-
-            dias.append(dia)
-
-        return dias, horarios_contratuais
+        return extract_punch_rows_from_tables(tabelas)
 
     # ──────────────────────────────────────────────
     # Extração MHTML
@@ -543,173 +581,25 @@ class PdfToExcelApp:
 
     def extrair_html_de_mhtml(self, caminho):
         """Abre um arquivo .mhtml e retorna o conteúdo HTML interno como string."""
-        with open(caminho, "rb") as f:
-            msg = email_lib.message_from_bytes(f.read())
-        for part in msg.walk():
-            if "html" in part.get_content_type():
-                payload = part.get_payload(decode=True)
-                charset = part.get_content_charset() or "utf-8"
-                return payload.decode(charset, errors="replace")
-        return None
+        return extract_html_from_mhtml(caminho)
 
     def extrair_info_funcionario_mhtml(self, soup):
         """Extrai dados do funcionário a partir do HTML parseado.
         Retorna (dict, motivo_falha). Células têm formato 'CAMPO:Valor'."""
-        info = {}
-
-        campo_map_lower = {
-            "empresa"        : "empresa",
-            "cnpj"           : "cnpj",
-            "cei"            : "cei",
-            "endereço"       : "endereco",
-            "nome"           : "nome",
-            "pis/pasep"      : "pis",
-            "admissão"       : "admissao",
-            "centro de custo": "centro_custo",
-            "cpf"            : "cpf",
-            "matrícula"      : "matricula",
-            "departamento"   : "departamento",
-            "cargo"          : "cargo",
-        }
-
-        for td in soup.find_all(["td", "th"]):
-            texto = td.get_text(separator=" ", strip=True)
-            if ":" not in texto:
-                continue
-            chave, _, valor = texto.partition(":")
-            chave_norm = chave.strip().lower()
-            valor = valor.strip()
-            if chave_norm in campo_map_lower and valor:
-                info[campo_map_lower[chave_norm]] = valor
-
-        if not info.get("nome"):
-            tem_empresa = "empresa" in info
-            if not tem_empresa:
-                motivo = "nenhum campo reconhecido — estrutura do MHTML diferente do esperado"
-            else:
-                motivo = "empresa identificada mas campo NOME não encontrado"
-            return info, motivo
-
-        return info, None
+        return extract_employee_info_from_mhtml(soup)
 
     def extrair_dados_ponto_mhtml(self, soup):
         """Extrai registros de ponto da tabela HTML.
         Cada linha-mestre tem 17 células: [0]=data, [3]=ENT1, [4]=SAÍ1,
         [5]=ENT2, [6]=SAÍ2. Linhas de detalhe (3 células) são ignoradas."""
-        dias = []
-        tables = soup.find_all("table")
-
-        tabela_ponto = None
-        for table in tables:
-            primeira = table.find("tr")
-            if primeira and "DIA" in primeira.get_text():
-                tabela_ponto = table
-                break
-
-        if not tabela_ponto:
-            return dias
-
-        data_re = re.compile(r"(\d{2}/\d{2}/\d{2,4})")
-
-        for tr in tabela_ponto.find_all("tr"):
-            cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
-
-            if len(cells) < 17:
-                continue
-            m = data_re.match(cells[0])
-            if not m:
-                continue
-
-            data_raw  = cells[0]
-            data_part = m.group(1)
-
-            try:
-                from datetime import datetime as dt
-                fmt = "%d/%m/%y" if len(data_part.split("/")[2]) == 2 else "%d/%m/%Y"
-                data_fmt = dt.strptime(data_part, fmt).strftime("%d/%m/%Y")
-            except ValueError:
-                data_fmt = data_part
-
-            dia_semana = data_raw.split("-")[-1].strip() if "-" in data_raw else ""
-
-            ent1    = cells[3].strip()
-            sai1    = cells[4].strip()
-            ent2    = cells[5].strip()
-            sai2    = cells[6].strip()
-            duracao = cells[10].strip() if len(cells) > 10 else ""
-            ch      = cells[12].strip() if len(cells) > 12 else ""
-
-            # "marcacoes" = resumo visual das batidas (ex: "07:23 14:27")
-            marcacoes = f"{ent1} {sai1}".strip() if ent1 or sai1 else ""
-
-            dias.append({
-                "dia"     : f"{data_fmt} - {dia_semana}",
-                "marcacoes": marcacoes,
-                "ent1"    : ent1,
-                "sai1"    : sai1,
-                "ent2"    : ent2,
-                "sai2"    : sai2,
-                "ent3"    : "",
-                "sai3"    : "",
-                "duracao" : duracao,
-                "ch"      : ch,
-            })
-
-        return dias
+        return extract_punch_rows_from_mhtml(soup)
 
     # ──────────────────────────────────────────────
 
     def extrair_funcionarios_de_pdf(self, pdf):
         """Processa um PDF com um ou mais funcionários, página a página.
         Retorna lista de tuplas (info_funcionario, dias)."""
-        resultados = []
-
-        texto_atual  = ""
-        tabelas_atual = []
-
-        def finalizar_secao(texto, tabelas):
-            """Extrai e retorna (info, dias) de uma seção acumulada."""
-            if not texto.strip():
-                return None
-            info, motivo = self.extrair_info_funcionario(texto)
-            if not info.get("nome"):
-                self.log(f"    ⚠️ Seção sem funcionário identificado: {motivo}", "error")
-                return None
-            dias, horarios = self.extrair_dados_ponto(tabelas)
-            if horarios:
-                info["horarios_contratuais"] = horarios
-            return info, dias
-
-        for pagina in pdf.pages:
-            texto_pagina   = pagina.extract_text() or ""
-            tabelas_pagina = []
-            for t in (pagina.extract_tables() or []):
-                if t:
-                    tabelas_pagina.extend(t)
-
-            # Nova seção começa quando a página contém um cabeçalho de funcionário
-            e_novo_funcionario = bool(
-                re.search(r'NOME:\s*.+?\s+PIS/PASEP:', texto_pagina, re.IGNORECASE)
-            )
-
-            if e_novo_funcionario and texto_atual:
-                # Finaliza o funcionário anterior antes de começar o próximo
-                resultado = finalizar_secao(texto_atual, tabelas_atual)
-                if resultado:
-                    resultados.append(resultado)
-                texto_atual   = ""
-                tabelas_atual = []
-
-            texto_atual   += texto_pagina
-            tabelas_atual += tabelas_pagina
-
-        # Finaliza o último (ou único) funcionário
-        if texto_atual:
-            resultado = finalizar_secao(texto_atual, tabelas_atual)
-            if resultado:
-                resultados.append(resultado)
-
-        return resultados
+        return extract_pdf_employees(pdf, logger=self.log)
 
     def processar_pdfs_thread(self):
         """Thread principal de processamento."""
@@ -749,7 +639,7 @@ class PdfToExcelApp:
 
                         dias_do_pdf = self.extrair_dados_ponto_mhtml(soup)
 
-                    else:
+                    elif ext == ".pdf":
                         try:
                             pdf_aberto = pdfplumber.open(pdf_path)
                         except Exception:
@@ -770,7 +660,7 @@ class PdfToExcelApp:
                             for dia in dias_do_pdf:
                                 dia["nome"]    = info_funcionario.get("nome", "")
                                 dia["empresa"] = info_funcionario.get("empresa", "")
-                                dia["cpf"]     = info_funcionario.get("cpf", "")
+                                dia["cpf"]     = formatar_cpf(info_funcionario.get("cpf", ""))
 
                             if cpf not in todos_funcionarios:
                                 todos_funcionarios[cpf] = info_funcionario
@@ -782,12 +672,16 @@ class PdfToExcelApp:
                                      f"{len(dias_do_pdf)} dia(s) extraído(s)", "success")
                         continue  # pula o bloco de associação abaixo (já feito acima)
 
+                    else:
+                        self.log(f"  ✗ Formato não suportado: {ext or 'sem extensão'}", "error")
+                        continue
+
                     # Associar dados básicos a cada dia e registrar funcionário completo (MHTML)
                     cpf = info_funcionario.get("cpf", info_funcionario.get("nome", ""))
                     for dia in dias_do_pdf:
                         dia["nome"]    = info_funcionario.get("nome", "")
                         dia["empresa"] = info_funcionario.get("empresa", "")
-                        dia["cpf"]     = info_funcionario.get("cpf", "")
+                        dia["cpf"]     = formatar_cpf(info_funcionario.get("cpf", ""))
 
                     # Acumula dias do mesmo funcionário somando os que já existem
                     if cpf not in todos_funcionarios:
@@ -806,8 +700,9 @@ class PdfToExcelApp:
                              f"Tente processar menos arquivos por vez.", "error")
                 except Exception as e:
                     self.log(f"  ✗ Erro inesperado em '{nome_arquivo}': {str(e)}", "error")
-
-                self.root.after(0, lambda: self.progress_bar.set(((idx + 1) / total_pdfs)))
+                finally:
+                    progresso = (idx + 1) / total_pdfs if total_pdfs else 0
+                    self.root.after(0, lambda p=progresso: self.progress_bar.set(p))
 
         except Exception as e:
             self.log(f"Erro crítico no processamento: {str(e)}", "error")
@@ -815,7 +710,7 @@ class PdfToExcelApp:
             self.root.after(0, lambda: self._finalizar_processamento(
                 todos_dias, total_pdfs, total_dias, todos_funcionarios))
 
-    def salvar_excel(self, dados, todos_funcionarios):
+    def salvar_excel(self, dados, todos_funcionarios, inconsistencias=None):
         """Salva os dados em um arquivo Excel com cabeçalho, aba de resumo e nome inteligente."""
 
         # ── Nome do arquivo inteligente ─────────────────────────────────────
@@ -831,256 +726,15 @@ class PdfToExcelApp:
 
         if not excel_path:
             self.log("Operação cancelada pelo usuário.", "info")
-            return
+            return False
 
         self.dir_salvar_excel = str(Path(excel_path).parent)
         self.salvar_configuracoes(silencioso=True)
 
         try:
-            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-            from openpyxl.utils import get_column_letter
-
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Ponto"
-
-            funcionario_unico = len(todos_funcionarios) == 1
-
-            # ── Estilos ─────────────────────────────────────────────────────
-            fonte_cab    = Font(bold=True, color="FFFFFF", size=10)
-            fill_cab     = PatternFill("solid", fgColor="1F4E79")
-            fill_info    = PatternFill("solid", fgColor="D6E4F0")
-            fonte_info   = Font(bold=True, size=10, color="1F4E79")
-            fonte_label  = Font(bold=True, size=9,  color="2C3E50")
-            alinhamento        = Alignment(vertical="center", horizontal="left")
-            alinhamento_centro = Alignment(vertical="center", horizontal="center")
-            borda_fina   = Border(
-                bottom=Side(style="thin", color="BFBFBF"),
-                top=Side(style="thin",    color="BFBFBF"),
-            )
-
-            linha_atual = 1
-
-            # ── Helper: dias efetivamente trabalhados ────────────────────────
-            def dias_trabalhados(dias_lista):
-                return [d for d in dias_lista if any(
-                    d.get(k, "").strip()
-                    for k in ("ent1", "sai1", "ent2", "sai2", "ent3", "sai3")
-                )]
-
-            # ── Ordenação: nome → data (ANTES de escrever qualquer linha) ────
-            def chave_ordenacao(dia):
-                nome     = dia.get("nome", "")
-                data_str = dia.get("dia", "").split(" ")[0]  # "DD/MM/AA" ou "DD/MM/AAAA"
-                try:
-                    from datetime import datetime as dt
-                    partes = data_str.split("/")
-                    fmt = "%d/%m/%y" if len(partes) == 3 and len(partes[2]) == 2 else "%d/%m/%Y"
-                    data = dt.strptime(data_str, fmt)
-                except ValueError:
-                    data = datetime.min
-                return (nome, data)
-
-            dados = sorted(dados, key=chave_ordenacao)
-
-            # ── Cabeçalho do funcionário (único) ─────────────────────────────
-            if funcionario_unico:
-                info = list(todos_funcionarios.values())[0]
-                campos = [
-                    ("Empresa",          info.get("empresa",      "")),
-                    ("Nome",             info.get("nome",         "")),
-                    ("CPF",              info.get("cpf",          "")),
-                    ("PIS/PASEP",        info.get("pis",          "")),
-                    ("Matrícula",        info.get("matricula",    "")),
-                    ("Admissão",         info.get("admissao",     "")),
-                    ("Cargo",            info.get("cargo",        "")),
-                    ("Departamento",     info.get("departamento", "")),
-                    ("Centro de Custo",  info.get("centro_custo", "")),
-                ]
-                campos = [(k, v) for k, v in campos if v]
-
-                n_colunas_cab = 10  # DIA MARCAÇÕES ENT1 SAÍ1 ENT2 SAÍ2 ENT3 SAÍ3 DURAÇÃO CH
-
-                ws.merge_cells(start_row=linha_atual, start_column=1,
-                               end_row=linha_atual, end_column=n_colunas_cab)
-                cel = ws.cell(row=linha_atual, column=1, value="DADOS DO FUNCIONÁRIO")
-                cel.font      = fonte_cab
-                cel.fill      = fill_cab
-                cel.alignment = Alignment(horizontal="center", vertical="center")
-                ws.row_dimensions[linha_atual].height = 20
-                linha_atual += 1
-
-                for i in range(0, len(campos), 2):
-                    par = campos[i:i+2]
-                    for col_offset, (label, valor) in enumerate(par):
-                        col_l   = 1 + col_offset * 5
-                        col_v   = col_l + 1
-                        col_fim = min(col_l + 4, n_colunas_cab)
-
-                        cel_l = ws.cell(row=linha_atual, column=col_l, value=label.upper() + ":")
-                        cel_l.font      = fonte_label
-                        cel_l.fill      = fill_info
-                        cel_l.alignment = alinhamento
-
-                        ws.merge_cells(start_row=linha_atual, start_column=col_v,
-                                       end_row=linha_atual, end_column=col_fim)
-                        cel_v = ws.cell(row=linha_atual, column=col_v, value=valor)
-                        cel_v.font      = fonte_info
-                        cel_v.fill      = fill_info
-                        cel_v.alignment = alinhamento
-
-                    ultimo_col_usado = 1 + len(par) * 5 - 1
-                    for col_r in range(ultimo_col_usado + 1, n_colunas_cab + 1):
-                        ws.cell(row=linha_atual, column=col_r).fill = fill_info
-
-                    ws.row_dimensions[linha_atual].height = 18
-                    linha_atual += 1
-
-                # Separador
-                for col_r in range(1, n_colunas_cab + 1):
-                    ws.cell(row=linha_atual, column=col_r).fill = PatternFill("solid", fgColor="FFFFFF")
-                ws.row_dimensions[linha_atual].height = 6
-                linha_atual += 1
-
-            # ── Colunas da tabela ─────────────────────────────────────────────
-            if funcionario_unico:
-                cabecalhos_visiveis = [
-                    "DIA", "MARCAÇÕES", "ENT. 1", "SAÍ. 1",
-                    "ENT. 2", "SAÍ. 2", "ENT. 3", "SAÍ. 3", "DURAÇÃO", "CH"
-                ]
-                valores_keys = [
-                    "dia", "marcacoes", "ent1", "sai1",
-                    "ent2", "sai2", "ent3", "sai3", "duracao", "ch"
-                ]
-                larguras = [18, 26, 10, 10, 10, 10, 10, 10, 10, 8]
-            else:
-                cabecalhos_visiveis = [
-                    "FUNCIONÁRIO", "CPF", "DIA", "MARCAÇÕES", "ENT. 1", "SAÍ. 1",
-                    "ENT. 2", "SAÍ. 2", "ENT. 3", "SAÍ. 3", "DURAÇÃO", "CH"
-                ]
-                valores_keys = [
-                    "nome", "cpf", "dia", "marcacoes", "ent1", "sai1",
-                    "ent2", "sai2", "ent3", "sai3", "duracao", "ch"
-                ]
-                larguras = [30, 16, 18, 26, 10, 10, 10, 10, 10, 10, 10, 8]
-
-            # ── Fills alternados (usados no resumo e na tabela) ──────────────
-            fill_par   = PatternFill("solid", fgColor="EBF5FB")
-            fill_impar = PatternFill("solid", fgColor="FFFFFF")
-
-            # ── Resumo ────────────────────────────────────────────────────────
-            cab_resumo = [
-                "NOME", "CPF", "PIS/PASEP", "CARGO", "ADMISSÃO",
-                "MATRÍCULA", "DEPARTAMENTO", "CENTRO DE CUSTO",
-                "DIAS TRABALHADOS", "MÉDIA HORAS/DIA"
-            ]
-            larg_resumo = [35, 16, 14, 25, 12, 12, 22, 18, 16, 16]
-
-            def linha_resumo(info, dias_lista):
-                trab        = dias_trabalhados(dias_lista)
-                total_dias  = len(trab)
-                total_horas = self._somar_duracoes([d.get("duracao", "") for d in trab])
-                media       = self._media_horas(total_horas, total_dias)
-                return [
-                    info.get("nome",         ""),
-                    info.get("cpf",          ""),
-                    info.get("pis",          ""),
-                    info.get("cargo",        ""),
-                    info.get("admissao",     ""),
-                    info.get("matricula",    ""),
-                    info.get("departamento", ""),
-                    info.get("centro_custo", ""),
-                    total_dias,
-                    media,
-                ]
-
-            fill_resumo_cab = PatternFill("solid", fgColor="2E86C1")
-
-            if funcionario_unico:
-                # Resumo inline entre cabeçalho e tabela
-                ws.merge_cells(start_row=linha_atual, start_column=1,
-                               end_row=linha_atual, end_column=n_colunas_cab)
-                cel = ws.cell(row=linha_atual, column=1, value="RESUMO")
-                cel.font      = fonte_cab
-                cel.fill      = fill_resumo_cab
-                cel.alignment = Alignment(horizontal="center", vertical="center")
-                ws.row_dimensions[linha_atual].height = 20
-                linha_atual += 1
-
-                for col, cab in enumerate(cab_resumo, 1):
-                    cel = ws.cell(row=linha_atual, column=col, value=cab)
-                    cel.font      = fonte_cab
-                    cel.fill      = fill_resumo_cab
-                    cel.alignment = Alignment(horizontal="center", vertical="center")
-                    cel.border    = borda_fina
-                ws.row_dimensions[linha_atual].height = 18
-                linha_atual += 1
-
-                info_u  = list(todos_funcionarios.values())[0]
-                vals_r  = linha_resumo(info_u, info_u.get("_dias", dados))
-                for col, valor in enumerate(vals_r, 1):
-                    cel = ws.cell(row=linha_atual, column=col, value=valor)
-                    cel.fill      = fill_par
-                    cel.alignment = alinhamento
-                    cel.border    = borda_fina
-                linha_atual += 1
-
-                # Separador antes da tabela
-                for col_r in range(1, n_colunas_cab + 1):
-                    ws.cell(row=linha_atual, column=col_r).fill = PatternFill("solid", fgColor="FFFFFF")
-                ws.row_dimensions[linha_atual].height = 6
-                linha_atual += 1
-
-            else:
-                # Aba separada de Resumo para múltiplos funcionários
-                ws_resumo = wb.create_sheet("Resumo")
-
-                for col, cab in enumerate(cab_resumo, 1):
-                    cel = ws_resumo.cell(row=1, column=col, value=cab)
-                    cel.font      = fonte_cab
-                    cel.fill      = fill_cab
-                    cel.alignment = Alignment(horizontal="center", vertical="center")
-                ws_resumo.row_dimensions[1].height = 20
-
-                for row_r, (cpf, info) in enumerate(todos_funcionarios.items(), 2):
-                    vals_r = linha_resumo(info, info.get("_dias", []))
-                    fill   = fill_par if row_r % 2 == 0 else fill_impar
-                    for col, valor in enumerate(vals_r, 1):
-                        cel = ws_resumo.cell(row=row_r, column=col, value=valor)
-                        cel.fill      = fill
-                        cel.alignment = alinhamento
-                        cel.border    = borda_fina
-
-                for col, larg in enumerate(larg_resumo, 1):
-                    ws_resumo.column_dimensions[get_column_letter(col)].width = larg
-
-            # ── Cabeçalhos da tabela de ponto ────────────────────────────────
-            for col, cab in enumerate(cabecalhos_visiveis, 1):
-                cel = ws.cell(row=linha_atual, column=col, value=cab)
-                cel.font      = fonte_cab
-                cel.fill      = fill_cab
-                cel.alignment = Alignment(horizontal="center", vertical="center")
-                cel.border    = borda_fina
-            ws.row_dimensions[linha_atual].height = 20
-            linha_atual += 1
-
-            # ── Dados de ponto ───────────────────────────────────────────────
-            for i, dia in enumerate(dados):
-                fill = fill_par if i % 2 == 0 else fill_impar
-                col_dia = 1 if funcionario_unico else 3  # coluna DIA varia conforme o modo
-                for col, key in enumerate(valores_keys, 1):
-                    cel = ws.cell(row=linha_atual, column=col, value=dia.get(key, ""))
-                    cel.fill      = fill
-                    cel.alignment = alinhamento if col == col_dia else alinhamento_centro
-                    cel.border    = borda_fina
-                linha_atual += 1
-
-            # ── Larguras das colunas ─────────────────────────────────────────
-            for col, largura in enumerate(larguras, 1):
-                ws.column_dimensions[get_column_letter(col)].width = largura
-
-            wb.save(excel_path)
+            save_excel_file(excel_path, dados, todos_funcionarios, inconsistencias=inconsistencias)
             self.log(f"Planilha salva: {excel_path}", "success")
+            total_inconsistencias = len(inconsistencias or [])
 
             messagebox.showinfo(
                 "Sucesso",
@@ -1088,88 +742,198 @@ class PdfToExcelApp:
                 f"Arquivo: {Path(excel_path).name}\n"
                 f"Local: {Path(excel_path).parent}\n"
                 f"Funcionários: {len(todos_funcionarios)}\n"
-                f"Dias processados: {len(dados)}"
+                f"Dias processados: {len(dados)}\n"
+                f"Inconsistências: {total_inconsistencias}"
             )
+            return True
 
         except Exception as e:
             self.log(f"Erro ao salvar Excel: {str(e)}", "error")
             messagebox.showerror("Erro", f"Não foi possível salvar a planilha:\n{str(e)}")
+            return False
 
     def _gerar_nome_arquivo(self, dados, todos_funcionarios):
         """Gera o nome sugerido para o arquivo Excel com base no cenário."""
-        MESES = {
-            1:"Jan", 2:"Fev", 3:"Mar", 4:"Abr", 5:"Mai", 6:"Jun",
-            7:"Jul", 8:"Ago", 9:"Set", 10:"Out", 11:"Nov", 12:"Dez"
-        }
+        return generate_suggested_filename(dados, todos_funcionarios, len(self.pdf_paths))
 
-        def nome_curto(nome_completo):
-            partes = nome_completo.strip().split()
-            return f"{partes[0]}_{partes[-1]}" if len(partes) > 1 else partes[0]
+    def anonimizar_planilha(self):
+        """Cria uma cópia anonimizada da planilha e uma chave criptografada."""
+        if self.privacidade_ativa:
+            return
 
-        def mes_ano_dos_dias(dias_lista):
-            """Detecta mês/ano predominante nas datas dos dias."""
-            try:
-                datas = [d.get("dia", "").split(" ")[0] for d in dias_lista if d.get("dia")]
-                from collections import Counter
-                meses_anos = []
-                for data in datas:
-                    partes = data.split("/")
-                    if len(partes) == 3:
-                        meses_anos.append((int(partes[1]), int(partes[2])))
-                if not meses_anos:
-                    return None
-                mes, ano = Counter(meses_anos).most_common(1)[0][0]
-                return f"{MESES[mes]}{ano}"
-            except Exception:
+        excel_path = filedialog.askopenfilename(
+            title="Selecionar planilha para anonimizar",
+            filetypes=[("Arquivos Excel", "*.xlsx")],
+            initialdir=self.dir_salvar_excel
+        )
+        if not excel_path:
+            return
+
+        output_path = filedialog.asksaveasfilename(
+            title="Salvar planilha anonimizada",
+            defaultextension=".xlsx",
+            initialfile=suggest_anonymized_path(excel_path).name,
+            initialdir=str(Path(excel_path).parent),
+            filetypes=[("Arquivos Excel", "*.xlsx")]
+        )
+        if not output_path:
+            return
+
+        key_path = filedialog.asksaveasfilename(
+            title="Salvar chave de restauração",
+            defaultextension=".cidkey",
+            initialfile=suggest_key_path(output_path).name,
+            initialdir=str(Path(output_path).parent),
+            filetypes=[("Chave Control ID Reader", "*.cidkey")]
+        )
+        if not key_path:
+            return
+
+        senha = self._pedir_senha_privacidade(confirmar=True)
+        if not senha:
+            return
+
+        self._executar_privacidade_thread(
+            "Anonimizando planilha...",
+            anonymize_excel_file,
+            (excel_path, output_path, key_path, senha),
+            lambda result: (
+                "Planilha anonimizada com sucesso!",
+                (
+                    f"Planilha anonimizada com sucesso!\n\n"
+                    f"Arquivo: {Path(result['output_path']).name}\n"
+                    f"Chave: {Path(result['key_path']).name}\n"
+                    f"Valores únicos protegidos: {result['unique_values']}\n\n"
+                    "Guarde a chave e a senha em segurança. Sem elas não dá para restaurar os dados reais."
+                )
+            ),
+        )
+
+    def restaurar_planilha(self):
+        """Restaura uma planilha anonimizada usando a chave criptografada."""
+        if self.privacidade_ativa:
+            return
+
+        excel_path = filedialog.askopenfilename(
+            title="Selecionar planilha anonimizada",
+            filetypes=[("Arquivos Excel", "*.xlsx")],
+            initialdir=self.dir_salvar_excel
+        )
+        if not excel_path:
+            return
+
+        key_path = filedialog.askopenfilename(
+            title="Selecionar chave de restauração",
+            filetypes=[("Chave Control ID Reader", "*.cidkey")],
+            initialdir=str(Path(excel_path).parent)
+        )
+        if not key_path:
+            return
+
+        output_path = filedialog.asksaveasfilename(
+            title="Salvar planilha restaurada",
+            defaultextension=".xlsx",
+            initialfile=suggest_restored_path(excel_path).name,
+            initialdir=str(Path(excel_path).parent),
+            filetypes=[("Arquivos Excel", "*.xlsx")]
+        )
+        if not output_path:
+            return
+
+        senha = self._pedir_senha_privacidade(confirmar=False)
+        if not senha:
+            return
+
+        self._executar_privacidade_thread(
+            "Restaurando dados da planilha...",
+            restore_excel_file,
+            (excel_path, output_path, key_path, senha),
+            lambda result: (
+                "Planilha restaurada com sucesso!",
+                (
+                    f"Planilha restaurada com sucesso!\n\n"
+                    f"Arquivo: {Path(result['output_path']).name}\n"
+                    f"Células/textos restaurados: {result['restored']}"
+                )
+            ),
+        )
+
+    def _pedir_senha_privacidade(self, confirmar=False):
+        senha = simpledialog.askstring(
+            "Senha da chave",
+            "Digite uma senha para proteger a chave:" if confirmar else "Digite a senha da chave:",
+            show="*",
+            parent=self.root,
+        )
+        if senha is None:
+            return None
+        if not senha:
+            messagebox.showwarning("Atenção", "A senha não pode ficar vazia.")
+            return None
+
+        if confirmar:
+            confirmacao = simpledialog.askstring(
+                "Confirmar senha",
+                "Digite a senha novamente:",
+                show="*",
+                parent=self.root,
+            )
+            if confirmacao is None:
+                return None
+            if senha != confirmacao:
+                messagebox.showwarning("Atenção", "As senhas não conferem.")
                 return None
 
-        num_funcionarios = len(todos_funcionarios)
+        return senha
 
-        if num_funcionarios == 1:
-            info   = list(todos_funcionarios.values())[0]
-            nc     = nome_curto(info.get("nome", "Funcionario"))
-            dias_f = info.get("_dias", dados)
+    def _executar_privacidade_thread(self, status, funcao, args, mensagem_sucesso):
+        self.privacidade_ativa = True
+        self._set_acoes_habilitadas(False)
+        self.progress_var.set(0)
+        self.status_final.configure(text=status)
+        self.log(status, "processing")
 
-            if len(self.pdf_paths) == 1:
-                # 1 arquivo, 1 funcionário → inclui mês
-                mes_ano = mes_ano_dos_dias(dias_f)
-                sufixo  = f"_{mes_ano}" if mes_ano else ""
-                return f"Ponto_{nc}{sufixo}.xlsx"
-            else:
-                # N arquivos, mesmo funcionário → sem mês (ambíguo)
-                return f"Ponto_{nc}.xlsx"
-        else:
-            # N funcionários diferentes → contagem + timestamp do mês atual
-            mes_ano = MESES[datetime.now().month] + str(datetime.now().year)
-            return f"Ponto_{num_funcionarios}Funcionarios_{mes_ano}.xlsx"
-
-    def _somar_duracoes(self, duracoes):
-        """Soma uma lista de strings 'HH:MM' e retorna o total em 'HH:MM'."""
-        total_min = 0
-        for d in duracoes:
-            if not d or ":" not in d:
-                continue
+        def worker():
             try:
-                h, m = d.strip().split(":")
-                total_min += int(h) * 60 + int(m)
-            except ValueError:
-                continue
-        return f"{total_min // 60:02d}:{total_min % 60:02d}"
+                resultado = funcao(*args)
+                titulo, mensagem = mensagem_sucesso(resultado)
 
-    def _media_horas(self, total_horas, total_dias):
-        """Calcula a média de horas por dia a partir de 'HH:MM' e quantidade de dias."""
-        if not total_dias or ":" not in total_horas:
-            return "00:00"
-        try:
-            h, m = total_horas.split(":")
-            total_min = int(h) * 60 + int(m)
-            media_min = total_min // total_dias
-            return f"{media_min // 60:02d}:{media_min % 60:02d}"
-        except ValueError:
-            return "00:00"
+                def finalizar_sucesso():
+                    self.progress_bar.set(1)
+                    self.status_final.configure(text=titulo)
+                    self.log(titulo, "success")
+                    messagebox.showinfo("Concluído", mensagem)
+                    self.privacidade_ativa = False
+                    self._set_acoes_habilitadas(True)
+
+                self.root.after(0, finalizar_sucesso)
+
+            except PrivacyError as e:
+                mensagem = str(e)
+                self.root.after(0, lambda msg=mensagem: self._finalizar_privacidade_erro(msg))
+            except PermissionError:
+                self.root.after(0, lambda: self._finalizar_privacidade_erro(
+                    "Sem permissão para ler ou salvar os arquivos. Verifique se a planilha está aberta."
+                ))
+            except Exception as e:
+                mensagem = f"Erro inesperado: {str(e)}"
+                self.root.after(0, lambda msg=mensagem: self._finalizar_privacidade_erro(msg))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finalizar_privacidade_erro(self, mensagem):
+        self.progress_bar.set(0)
+        self.status_final.configure(text="Operação de privacidade cancelada ou concluída com erro.")
+        self.log(f"✗ {mensagem}", "error")
+        messagebox.showerror("Erro", mensagem)
+        self.privacidade_ativa = False
+        self._set_acoes_habilitadas(True)
 
     def separar_pdf_por_funcionario(self):
         """Abre um PDF com múltiplos funcionários e gera um ZIP com um PDF por funcionário."""
+        if self.separacao_ativa:
+            return
+
         pdf_path = filedialog.askopenfilename(
             title="Selecionar PDF com múltiplos funcionários",
             filetypes=[("Arquivos PDF", "*.pdf")],
@@ -1191,8 +955,12 @@ class PdfToExcelApp:
         if not zip_path:
             return
 
+        self.separacao_ativa = True
+        self._set_acoes_habilitadas(False)
+        self.progress_var.set(0)
+        self.status_final.configure(text="Separando PDF: detectando funcionários...")
         self.log("Iniciando separação de PDF por funcionário...", "processing")
-        import threading
+        self._start_elapsed_log("Separação de PDF")
         t = threading.Thread(
             target=self._separar_pdf_worker,
             args=(pdf_path, zip_path),
@@ -1203,71 +971,51 @@ class PdfToExcelApp:
     def _separar_pdf_worker(self, pdf_path, zip_path):
         """Thread que separa o PDF e gera o ZIP."""
         try:
-            # Detectar grupos de páginas por funcionário
-            grupos = []
-            grupo_atual = None
+            self._set_progress(0.03, "Separando PDF: detectando funcionários...")
 
-            with pdfplumber.open(pdf_path) as pdf:
-                for i, pagina in enumerate(pdf.pages):
-                    texto = pagina.extract_text() or ""
-                    match = re.search(r'NOME:\s*(.+?)\s+PIS/PASEP:', texto, re.IGNORECASE)
-                    if match:
-                        nome = match.group(1).strip()
-                        grupo_atual = {"nome": nome, "paginas": [i]}
-                        grupos.append(grupo_atual)
-                    elif grupo_atual:
-                        grupo_atual["paginas"].append(i)
+            def registrar_arquivo(arquivo, index, total):
+                progresso = 0.15 + (0.85 * index / total)
+                self._set_progress(
+                    progresso,
+                    f"Separando PDF: {index}/{total} funcionário(s) exportado(s)..."
+                )
+                self.log(
+                    f"  ✓ {arquivo['nome']} → {arquivo['arquivo']} "
+                    f"({arquivo['paginas']} página(s))",
+                    "success",
+                )
+
+            grupos = detect_employee_page_groups(pdf_path)
+            self._set_progress(0.15, f"Separando PDF: {len(grupos)} funcionário(s) detectado(s).")
 
             if not grupos:
+                self._stop_elapsed_log(
+                    "Separação cancelada: nenhum funcionário identificado.",
+                    "error",
+                    status_final="Separação cancelada: nenhum funcionário identificado.",
+                )
                 self.root.after(0, lambda: (
                     self.log("⚠️ Nenhum funcionário identificado no PDF.", "error"),
                     messagebox.showwarning("Atenção", "Nenhum funcionário identificado no PDF.")
                 ))
+                self._finalizar_separacao_ui("Separação cancelada: nenhum funcionário identificado.")
                 return
 
             if len(grupos) == 1:
+                self._stop_elapsed_log(
+                    "Separação cancelada: PDF contém apenas um funcionário.",
+                    "error",
+                    status_final="Separação cancelada: PDF contém apenas um funcionário.",
+                )
                 self.root.after(0, lambda: (
                     self.log("⚠️ O PDF contém apenas um funcionário — separação desnecessária.", "error"),
                     messagebox.showwarning("Atenção", "O PDF contém apenas um funcionário.")
                 ))
+                self._finalizar_separacao_ui("Separação cancelada: PDF contém apenas um funcionário.")
                 return
 
             self.log(f"  {len(grupos)} funcionário(s) detectado(s). Gerando PDFs...", "processing")
-
-            # Gerar um PDF por funcionário e compactar no ZIP
-            reader = pypdf.PdfReader(pdf_path)
-
-            def nome_para_arquivo(nome):
-                """Sanitiza o nome para uso em nome de arquivo."""
-                import unicodedata
-                nfkd = unicodedata.normalize("NFKD", nome)
-                ascii_nome = nfkd.encode("ASCII", "ignore").decode()
-                return re.sub(r"[^\w\s-]", "", ascii_nome).strip().replace(" ", "_")
-
-            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                nomes_usados = {}
-                for grupo in grupos:
-                    writer = pypdf.PdfWriter()
-                    for idx_pagina in grupo["paginas"]:
-                        writer.add_page(reader.pages[idx_pagina])
-
-                    nome_base = nome_para_arquivo(grupo["nome"])
-
-                    # Evitar colisão de nomes
-                    if nome_base in nomes_usados:
-                        nomes_usados[nome_base] += 1
-                        nome_arquivo = f"{nome_base}_{nomes_usados[nome_base]}.pdf"
-                    else:
-                        nomes_usados[nome_base] = 1
-                        nome_arquivo = f"{nome_base}.pdf"
-
-                    import io
-                    buffer = io.BytesIO()
-                    writer.write(buffer)
-                    zf.writestr(nome_arquivo, buffer.getvalue())
-
-                    self.log(f"  ✓ {grupo['nome']} → {nome_arquivo} "
-                             f"({len(grupo['paginas'])} página(s))", "success")
+            write_employee_zip(pdf_path, zip_path, grupos, progress_callback=registrar_arquivo)
 
             self.root.after(0, lambda: (
                 self.log(f"\n✅ ZIP gerado com sucesso: {zip_path}", "success"),
@@ -1279,17 +1027,36 @@ class PdfToExcelApp:
                     f"Local: {Path(zip_path).parent}"
                 )
             ))
+            self._set_progress(1, "Separação concluída.")
+            self._stop_elapsed_log(
+                "Separação concluída.",
+                "success",
+                status_final="Separação concluída.",
+            )
+            self._finalizar_separacao_ui("Separação concluída.")
 
         except PermissionError:
+            self._stop_elapsed_log(
+                "Erro na separação: sem permissão.",
+                "error",
+                status_final="Erro na separação: sem permissão.",
+            )
             self.root.after(0, lambda: (
                 self.log("✗ Sem permissão para ler o PDF ou salvar o ZIP.", "error"),
                 messagebox.showerror("Erro", "Sem permissão para acessar o arquivo.")
             ))
+            self._finalizar_separacao_ui("Erro na separação: sem permissão.")
         except Exception as e:
+            self._stop_elapsed_log(
+                "Erro ao separar PDF.",
+                "error",
+                status_final="Erro ao separar PDF.",
+            )
             self.root.after(0, lambda: (
                 self.log(f"✗ Erro ao separar PDF: {str(e)}", "error"),
                 messagebox.showerror("Erro", f"Erro ao separar PDF:\n{str(e)}")
             ))
+            self._finalizar_separacao_ui("Erro ao separar PDF.")
 
     def iniciar_processamento(self):
         """Inicia o processamento em thread separada."""
@@ -1303,15 +1070,17 @@ class PdfToExcelApp:
         # Confirmar processamento
         resposta = messagebox.askyesno(
             "Confirmar Processamento",
-            f"Deseja processar {len(self.pdf_paths)} arquivo(s) PDF?\n\n"
+            f"Deseja processar {len(self.pdf_paths)} arquivo(s) PDF/MHTML?\n\n"
             "O processo pode levar alguns segundos dependendo do tamanho dos arquivos."
         )
 
         if not resposta:
             return
 
-        self.btn_processar.configure(state="disabled")
+        self.processamento_ativo = True
+        self._set_acoes_habilitadas(False)
         self.log("--- Iniciando processamento ---", "processing")
+        self.status_final.configure(text="Processando arquivos...")
         self.progress_var.set(0)
 
         # Executar em thread
@@ -1320,30 +1089,22 @@ class PdfToExcelApp:
 
     def _config_path(self):
         """Retorna o caminho do config.json em %APPDATA%\\ControlIDReader\\."""
-        appdata = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
-        config_dir = appdata / "ControlIDReader"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        return config_dir / "config.json"
+        return default_config_path()
 
     def carregar_configuracoes(self):
         """Carrega configurações salvas."""
         try:
-            config_file = self._config_path()
-            if config_file.exists():
-                with open(config_file, 'r', encoding='utf-8') as f:
-                    content = f.read().strip()
-                    if content:
-                        config = json.loads(content)
-                        if config.get("dir_abrir_pdf") and Path(config["dir_abrir_pdf"]).exists():
-                            self.dir_abrir_pdf = config["dir_abrir_pdf"]
-                        if config.get("dir_salvar_excel") and Path(config["dir_salvar_excel"]).exists():
-                            self.dir_salvar_excel = config["dir_salvar_excel"]
-                        if config.get("tema") in ("dark", "light"):
-                            self._tema_atual = config["tema"]
-                            ctk.set_appearance_mode(self._tema_atual)
-                            label = "🌙  Dark" if self._tema_atual == "dark" else "☀️  Light"
-                            self.btn_tema.configure(text=label)
-                            self._atualizar_cores_log()
+            config = load_config(self._config_path())
+            if config.get("dir_abrir_pdf") and Path(config["dir_abrir_pdf"]).exists():
+                self.dir_abrir_pdf = config["dir_abrir_pdf"]
+            if config.get("dir_salvar_excel") and Path(config["dir_salvar_excel"]).exists():
+                self.dir_salvar_excel = config["dir_salvar_excel"]
+            if config.get("tema") in ("dark", "light"):
+                self._tema_atual = config["tema"]
+                ctk.set_appearance_mode(self._tema_atual)
+                label = "🌙  Dark" if self._tema_atual == "dark" else "☀️  Light"
+                self.btn_tema.configure(text=label)
+                self._atualizar_cores_log()
         except Exception:
             pass  # Ignora erros de configuração — defaults já estão definidos no __init__
 
@@ -1356,9 +1117,7 @@ class PdfToExcelApp:
                 "tema": self._tema_atual,
                 "data_ultima_execucao": datetime.now().isoformat()
             }
-            config_file = self._config_path()
-            with open(config_file, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
+            save_config(config, self._config_path())
             if not silencioso:
                 self.log("Configurações salvas com sucesso.", "success")
                 messagebox.showinfo("Sucesso", "Configurações salvas!")
