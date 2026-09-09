@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local app state
+config.json
+.claude/
+
+# Build artifacts
+build/
+dist/
+installer/
+*.spec.bak
+
+# Generated outputs
+*.xlsx
+*.zip
+*.cidkey
+test_output_privacy/
+tmp*/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

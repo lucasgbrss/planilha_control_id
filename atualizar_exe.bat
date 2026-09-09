@@ -1,13 +1,9 @@
 @echo off
 echo ========================================
-echo  Criando executavel PDF Ponto para Excel
+echo  Atualizando executavel PDF Ponto para Excel
 echo ========================================
 echo.
 
-echo Instalando dependencias...
-pip install -r requirements.txt
-
-echo.
 echo Gerando executavel com PyInstaller...
 python -m PyInstaller --clean --onefile --windowed --name "Control ID Reader" ^
     --collect-all pdfplumber ^
@@ -18,6 +14,8 @@ python -m PyInstaller --clean --onefile --windowed --name "Control ID Reader" ^
     --collect-all cryptography ^
     --icon "control_id_reader.ico" ^
     --add-data "control_id_reader.ico;." ^
+    --distpath dist ^
+    --noconfirm ^
     pdf_para_excel.py
 
 echo.
