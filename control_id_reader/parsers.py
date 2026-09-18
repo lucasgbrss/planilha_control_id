@@ -1,5 +1,6 @@
 import email as email_lib
 import re
+import unicodedata
 
 from control_id_reader.utils import normalizar_cpf, parse_data_ponto
 
@@ -343,6 +344,103 @@ def extract_punch_rows_from_mhtml(soup):
     return dias
 
 
+def _card_label(valor):
+    texto = unicodedata.normalize("NFKD", str(valor or ""))
+    return texto.encode("ascii", "ignore").decode().upper()
+
+
+def is_card_day_table(tabela):
+    return bool(
+        tabela and len(tabela[0]) >= 8
+        and _card_label(tabela[0][0]).strip() == "DIA"
+        and _card_label(tabela[0][1]).strip() == "PREVISTO"
+    )
+
+
+def extract_card_employee_info_from_tables(tabelas):
+    """Le os campos de identificacao do cabecalho do Cartao de Ponto."""
+    if not any(is_card_day_table(tabela) for tabela in tabelas):
+        return {}
+
+    info = {}
+    campos = (
+        ("NOME DA EMPRESA", "empresa"),
+        ("CNPJ DA EMPRESA", "cnpj"),
+        ("NOME DO FUNCION", "nome"),
+        ("CPF DO FUNCION", "cpf"),
+        ("PIS DO FUNCION", "pis"),
+        ("DATA DE ADMISS", "admissao"),
+        ("NOME DO CARGO", "cargo"),
+        ("NUMERO DE MATR", "matricula"),
+        ("NMERO DE MATR", "matricula"),
+        ("NOME DO DEPARTAMENTO", "departamento"),
+        ("NOME DO CENTRO DE CUSTO", "centro_custo"),
+    )
+    for tabela in tabelas:
+        if is_card_day_table(tabela):
+            continue
+        for row in tabela:
+            for cell in row:
+                for line in str(cell or "").splitlines():
+                    label, sep, value = line.partition(":")
+                    if not sep or not value.strip():
+                        continue
+                    normalized = _card_label(label).strip()
+                    for prefix, key in campos:
+                        if normalized.startswith(prefix):
+                            info[key] = value.strip()
+                            break
+
+    if "cpf" in info:
+        info["cpf"] = normalizar_cpf(info["cpf"])
+    if "cnpj" in info:
+        info["cnpj"] = re.sub(r"\D", "", info["cnpj"])
+    return info
+
+
+def extract_card_punch_rows_from_tables(tabelas):
+    """Le a tabela diaria do Cartao de Ponto sem criar codigos CH artificiais."""
+    dias = []
+    for tabela in tabelas:
+        if not is_card_day_table(tabela):
+            continue
+        for row in tabela[1:]:
+            if not row or not re.match(r"^\d{2}/\d{2}/\d{4}\s*-\s*(SEG|TER|QUA|QUI|SEX|SAB|DOM)$", str(row[0] or "").strip(), re.IGNORECASE):
+                continue
+
+            def cell(index):
+                return str(row[index] or "").strip() if index < len(row) else ""
+
+            raw_marks = [cell(index) for index in range(2, 6)]
+            punches = [
+                match.group(1) if (match := re.match(r"^(\d{1,2}:\d{2})(?:\s|$)", mark)) else ""
+                for mark in raw_marks
+            ]
+            note = _card_label(" ".join(raw_marks))
+            justified = not any(punches) and (
+                any(marker in note for marker in ("ABONAR", "ATESTADO", "LICEN", "AFAST", "FERIAS"))
+                or bool(cell(10))
+            )
+            normal_total = cell(6)
+            dias.append({
+                "dia": cell(0),
+                "previsto": cell(1),
+                "marcacoes": " ".join(mark for mark in raw_marks if mark),
+                "ent1": punches[0],
+                "sai1": punches[1],
+                "ent2": punches[2],
+                "sai2": punches[3],
+                "ent3": "",
+                "sai3": "",
+                "duracao": normal_total if re.fullmatch(r"\d{1,3}:\d{2}", normal_total) else "",
+                "total_noturno": cell(7),
+                "ch": "",
+                "ausencia_justificada": justified,
+                "origem": "cartao",
+            })
+    return dias
+
+
 def extract_pdf_employees(pdf, logger=None):
     """Processa um PDF com um ou mais funcionarios, pagina a pagina."""
     resultados = []
@@ -364,8 +462,23 @@ def extract_pdf_employees(pdf, logger=None):
 
     for pagina in pdf.pages:
         texto_pagina = pagina.extract_text() or ""
+        tabelas_pdf = pagina.extract_tables() or []
+        if any(is_card_day_table(tabela) for tabela in tabelas_pdf):
+            if texto_atual:
+                resultado = finalizar_secao(texto_atual, tabelas_atual)
+                if resultado:
+                    resultados.append(resultado)
+                texto_atual = ""
+                tabelas_atual = []
+            info = extract_card_employee_info_from_tables(tabelas_pdf)
+            if info.get("nome"):
+                resultados.append((info, extract_card_punch_rows_from_tables(tabelas_pdf)))
+            elif logger:
+                logger("    Cartao de ponto sem funcionario identificado.", "error")
+            continue
+
         tabelas_pagina = []
-        for tabela in (pagina.extract_tables() or []):
+        for tabela in tabelas_pdf:
             if tabela:
                 tabelas_pagina.extend(tabela)
 

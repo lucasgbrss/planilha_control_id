@@ -42,6 +42,7 @@ def build_workbook(dados, todos_funcionarios, inconsistencias=None):
     ws.title = "Ponto"
 
     funcionario_unico = len(todos_funcionarios) == 1
+    tem_cartoes = any(dia.get("origem") == "cartao" for dia in dados)
 
     fonte_cab = Font(bold=True, color="FFFFFF", size=10)
     fill_cab = PatternFill("solid", fgColor="1F4E79")
@@ -78,7 +79,7 @@ def build_workbook(dados, todos_funcionarios, inconsistencias=None):
         ]
         campos = [(k, v) for k, v in campos if v]
 
-        n_colunas_cab = 10
+        n_colunas_cab = 12 if tem_cartoes else 10
 
         ws.merge_cells(start_row=linha_atual, start_column=1, end_row=linha_atual, end_column=n_colunas_cab)
         cel = ws.cell(row=linha_atual, column=1, value="DADOS DO FUNCIONÁRIO")
@@ -138,6 +139,16 @@ def build_workbook(dados, todos_funcionarios, inconsistencias=None):
             "ent2", "sai2", "ent3", "sai3", "duracao", "ch"
         ]
         larguras = [30, 16, 18, 26, 10, 10, 10, 10, 10, 10, 10, 8]
+
+    if tem_cartoes:
+        indice_previsto = cabecalhos_visiveis.index("DIA") + 1
+        cabecalhos_visiveis.insert(indice_previsto, "PREVISTO")
+        valores_keys.insert(indice_previsto, "previsto")
+        larguras.insert(indice_previsto, 30)
+        indice_noturno = cabecalhos_visiveis.index("CH")
+        cabecalhos_visiveis.insert(indice_noturno, "TOTAL NOTURNO")
+        valores_keys.insert(indice_noturno, "total_noturno")
+        larguras.insert(indice_noturno, 16)
 
     fill_par = PatternFill("solid", fgColor="EBF5FB")
     fill_impar = PatternFill("solid", fgColor="FFFFFF")
@@ -244,7 +255,12 @@ def build_workbook(dados, todos_funcionarios, inconsistencias=None):
             cel = ws.cell(row=linha_atual, column=col, value=dia.get(key, ""))
             cel.fill = fill
             cel.alignment = alinhamento if col == col_dia else alinhamento_centro
+            if tem_cartoes and key in ("previsto", "marcacoes"):
+                cel.alignment = Alignment(vertical="center", horizontal="left", wrap_text=True)
             cel.border = borda_fina
+        if dia.get("origem") == "cartao":
+            linhas_marcacoes = max(1, (len(dia.get("marcacoes", "")) + 24) // 25)
+            ws.row_dimensions[linha_atual].height = min(90, 15 * linhas_marcacoes)
         linha_atual += 1
 
     for col, largura in enumerate(larguras, 1):
@@ -277,14 +293,19 @@ def dias_trabalhados(dias_lista):
 
 
 def dias_trabalho_totais(dias_lista):
-    """Filtra dias de trabalho, definidos pela coluna CH preenchida."""
-    return [dia for dia in dias_lista if dia.get("ch", "").strip()]
+    """Filtra dias de trabalho pelo CH ou pela jornada prevista do cartao."""
+    return [
+        dia for dia in dias_lista
+        if dia.get("ch", "").strip()
+        or (dia.get("origem") == "cartao" and dia.get("previsto", "").strip())
+    ]
 
 
 def dias_faltados(dias_lista):
     """Filtra dias de trabalho sem nenhuma marcacao de ponto."""
     return [
         dia for dia in dias_trabalho_totais(dias_lista)
+        if not dia.get("ausencia_justificada")
         if not any(dia.get(k, "").strip() for k in ("ent1", "sai1", "ent2", "sai2", "ent3", "sai3"))
     ]
 

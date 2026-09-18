@@ -13,6 +13,7 @@ Converte um ou múltiplos arquivos de folha de ponto (PDF ou MHTML) da Control I
 - ✅ Aviso temporizado no log durante a separação para indicar que o app continua trabalhando
 - ✅ Ações concorrentes ficam bloqueadas durante geração de Excel e separação de PDF
 - ✅ Detecção automática de múltiplos formatos de PDF (colunas separadas ou mescladas)
+- ✅ Leitura de Cartão de Ponto com um funcionário por página, jornada prevista e total noturno
 - ✅ Interface moderna com CustomTkinter — cantos arredondados, tipografia limpa
 - ✅ Tema Dark/Light alternável com botão dedicado
 - ✅ Botões com cores intuitivas (verde/laranja/vermelho/azul/roxo)
@@ -25,7 +26,7 @@ Converte um ou múltiplos arquivos de folha de ponto (PDF ou MHTML) da Control I
 - ✅ Gera planilha Excel formatada com cabeçalho, resumo e tabela de ponto ordenada
 - ✅ Mostra pré-visualização antes de exportar
 - ✅ Gera relatório de inconsistências em aba própria quando houver avisos
-- ✅ Considera `CH` vazio como folga para cálculo de faltas
+- ✅ No espelho, considera `CH` vazio como folga; no cartão, usa a jornada prevista para calcular faltas
 - ✅ Aba **Resumo CH** com dias trabalhados/faltados/totais por funcionário e código de horário
 - ✅ Anonimiza planilhas para uso com IA ou terceiros e restaura os dados com chave protegida por senha
 - ✅ Memoriza separadamente o último diretório usado para abrir arquivos e para salvar Excel
@@ -58,6 +59,7 @@ Converte um ou múltiplos arquivos de folha de ponto (PDF ou MHTML) da Control I
    - Clique em **"✂️ Separar PDF por Funcionário"** para dividir um PDF com múltiplos funcionários
    - Clique em **"🔒 Anonimizar Planilha"** para gerar uma cópia sem dados sensíveis
    - Clique em **"🔓 Restaurar Dados"** para desfazer a anonimização usando a chave
+   - Clique em **"Ajuda"** no cabeçalho para consultar o que faz cada botão, como interpretar as abas e como funcionam espelho e cartão
 
 5. Escolha o local e nome para salvar a planilha ou o ZIP
 
@@ -72,6 +74,14 @@ O botão **"✂️ Separar PDF por Funcionário"** permite dividir um único PDF
 - Após gerar o ZIP, os PDFs separados podem ser adicionados normalmente para conversão em Excel
 
 > **Observação:** se o PDF contiver apenas um funcionário, o app avisa que a separação é desnecessária.
+
+## Cartão de Ponto
+
+O app reconhece o layout de Cartão de Ponto da Control ID com uma tabela diária por funcionário. A conversão extrai dados pessoais, jornada prevista, marcações, total de horas normais e total noturno. PDFs com vários cartões também podem ser separados por funcionário.
+
+No cartão, `PREVISTO` preenchido indica dia de trabalho; `PREVISTO` vazio indica folga. Uma jornada prevista sem marcações entra como falta, exceto quando o cartão informa abono, atestado ou outra justificativa reconhecida. Marcações em dia de folga continuam contando como dia trabalhado.
+
+O cartão não informa código `CH`: a coluna permanece vazia e não é gerado um código artificial. Por isso, a aba **Resumo CH** só aparece quando algum arquivo fornece códigos `CH` reais. A coluna `DURAÇÃO` recebe o valor de **Total Normais** do cartão; **Total Noturno** aparece em coluna própria e não é somado a esse valor.
 
 ## Privacidade da Planilha
 
@@ -100,9 +110,9 @@ A aba **Ponto** é organizada em três blocos:
 
 1. **Cabeçalho** — dados do funcionário extraídos do arquivo (empresa, nome, CPF, PIS, matrícula, admissão, cargo, departamento, centro de custo). Campos não encontrados são omitidos automaticamente.
 
-2. **Resumo** — linha única com dias efetivamente trabalhados, dias faltados, dias de trabalho totais e média de horas por dia trabalhado. Dias com `CH` vazio são considerados folga e não entram como falta.
+2. **Resumo** — linha única com dias efetivamente trabalhados, dias faltados, dias de trabalho totais e média de horas por dia trabalhado. No espelho, a jornada é definida pelo `CH`; no cartão, por `PREVISTO`.
 
-3. **Tabela de ponto** — registros ordenados por data, com as colunas: DIA, MARCAÇÕES, ENT. 1, SAÍ. 1, ENT. 2, SAÍ. 2, ENT. 3, SAÍ. 3, DURAÇÃO, CH.
+3. **Tabela de ponto** — registros ordenados por data, com as colunas: DIA, MARCAÇÕES, ENT. 1, SAÍ. 1, ENT. 2, SAÍ. 2, ENT. 3, SAÍ. 3, DURAÇÃO, CH. Quando há cartões, são adicionadas `PREVISTO` e `TOTAL NOTURNO`.
 
 ### Múltiplos funcionários
 

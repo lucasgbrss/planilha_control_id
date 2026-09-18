@@ -1,9 +1,21 @@
 import unittest
 
 from control_id_reader.audit import analyze_inconsistencies, build_preview_summary
+from control_id_reader.parsers import extract_card_punch_rows_from_tables
+from tests.card_fixtures import card_tables
 
 
 class AuditTest(unittest.TestCase):
+    def test_card_folga_falta_e_justificativas(self):
+        dias = extract_card_punch_rows_from_tables(card_tables())
+        funcionarios = {"12345678901": {"nome": "Ana Souza", "cpf": "12345678901", "_dias": dias}}
+
+        issues = analyze_inconsistencies(dias, funcionarios)
+        missing = [issue for issue in issues if issue["mensagem"] == "Dia de trabalho sem marcações de ponto."]
+
+        self.assertEqual([issue["dia"] for issue in missing], ["03/08/2026 - SEG"])
+        self.assertFalse(any(issue["campo"] == "CH" for issue in issues))
+
     def test_analyze_inconsistencies_detects_missing_cpf_and_odd_punches(self):
         dados = [{
             "nome": "Ana",

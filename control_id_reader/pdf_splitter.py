@@ -5,6 +5,7 @@ import zipfile
 import pdfplumber
 import pypdf
 
+from control_id_reader.parsers import extract_card_employee_info_from_tables, is_card_day_table
 from control_id_reader.utils import nome_para_arquivo
 
 
@@ -20,6 +21,15 @@ def detect_employee_page_groups_from_pages(pages):
             nome = match.group(1).strip()
             grupo_atual = {"nome": nome, "paginas": [index]}
             grupos.append(grupo_atual)
+            continue
+
+        possivel_cartao = "CART" in texto.upper() or "PREVISTO" in texto.upper()
+        tabelas = pagina.extract_tables() if possivel_cartao and hasattr(pagina, "extract_tables") else []
+        if any(is_card_day_table(tabela) for tabela in tabelas):
+            nome = extract_card_employee_info_from_tables(tabelas).get("nome")
+            grupo_atual = {"nome": nome, "paginas": [index]} if nome else None
+            if grupo_atual:
+                grupos.append(grupo_atual)
         elif grupo_atual:
             grupo_atual["paginas"].append(index)
 
