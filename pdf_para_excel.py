@@ -62,6 +62,7 @@ class PdfToExcelApp:
         self._elapsed_log_stop_event = None
         self._elapsed_log_interval = 5
         self._tema_atual = "dark"
+        self._janela_ajuda = None
 
         # Diretórios padrão (serão sobrescritos pelas configurações salvas)
         self.dir_abrir_pdf = str(Path.home() / "Downloads")
@@ -104,6 +105,88 @@ class PdfToExcelApp:
             self._tema_atual = "dark"
             self.btn_tema.configure(text="🌙  Dark")
         self.root.after(50, self._atualizar_cores_log)
+
+    def mostrar_ajuda(self):
+        """Abre a ajuda sem interromper o uso da janela principal."""
+        if self._janela_ajuda is not None and self._janela_ajuda.winfo_exists():
+            self._janela_ajuda.lift()
+            self._janela_ajuda.focus()
+            return
+
+        janela = ctk.CTkToplevel(self.root)
+        self._janela_ajuda = janela
+        janela.title("Ajuda - Control ID Reader")
+        janela.minsize(520, 460)
+        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - 660) // 2)
+        y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - 620) // 2)
+        janela.geometry(f"660x620+{x}+{y}")
+        janela.transient(self.root)
+
+        conteudo = ctk.CTkFrame(janela, fg_color="transparent")
+        conteudo.pack(fill="both", expand=True, padx=20, pady=16)
+        ctk.CTkLabel(
+            conteudo, text="Ajuda", anchor="w",
+            font=ctk.CTkFont(size=20, weight="bold"),
+        ).pack(fill="x", pady=(0, 10))
+
+        rolagem = ctk.CTkScrollableFrame(conteudo, fg_color="transparent")
+        rolagem.pack(fill="both", expand=True)
+
+        secoes = (
+            ("Arquivos", (
+                ("Adicionar Arquivos", "Inclui PDFs de espelho ou cartão de ponto e arquivos MHTML. É possível selecionar vários arquivos para a mesma planilha."),
+                ("Remover Selecionados", "Retira da lista os arquivos marcados. Use Ctrl ou Shift para selecionar vários itens."),
+                ("Limpar Tudo", "Esvazia a lista de seleção sem apagar os arquivos do computador."),
+            )),
+            ("Processamento", (
+                ("Gerar Planilha Excel", "Lê os arquivos da lista e mostra uma pré-visualização antes de pedir onde salvar o Excel."),
+                ("Pré-visualização", "Mostra funcionários, dias trabalhados, faltas e avisos. Gerar Excel confirma a exportação; Cancelar interrompe o salvamento."),
+                ("Separar PDF por Funcionário", "Escolhe um PDF diretamente e cria um ZIP com um PDF por funcionário. Funciona independentemente da lista de arquivos."),
+                ("Log, progresso e status", "Mostram as etapas, avisos, erros e andamento. Durante a separação, o log também informa o tempo decorrido."),
+            )),
+            ("Planilha gerada", (
+                ("Ponto", "Reúne os registros diários. No cartão, PREVISTO indica a jornada e TOTAL NOTURNO aparece em coluna própria."),
+                ("Inconsistências", "Lista avisos como dias previstos sem marcações e pares de entrada e saída incompletos. A aba aparece quando há avisos."),
+                ("Resumo CH", "Agrupa dias trabalhados e faltados por código de horário contratual. Aparece quando o arquivo informa códigos CH."),
+                ("Resumo", "Mostra, por funcionário, dias trabalhados, faltados, dias de trabalho totais e média de horas."),
+                ("Espelho e cartão", "No espelho, o CH define o dia de trabalho. No cartão, vale a jornada PREVISTO; abonos e atestados identificados não contam como falta."),
+            )),
+            ("Privacidade", (
+                ("Anonimizar Planilha", "Cria uma cópia do Excel com identificadores substituídos e uma chave .cidkey protegida por senha."),
+                ("Restaurar Dados", "Recupera os identificadores usando a planilha anonimizada, a chave .cidkey e a senha."),
+                ("Antes de compartilhar", "Confira textos livres, como justificativas do cartão, pois podem conter informações sensíveis que não são substituídas."),
+            )),
+            ("Preferências", (
+                ("Tema", "Alterna entre os modos claro e escuro."),
+                ("Salvar Configurações", "Guarda o tema e as últimas pastas usadas para abrir e salvar arquivos."),
+            )),
+        )
+
+        for indice, (titulo, itens) in enumerate(secoes):
+            if indice:
+                ctk.CTkFrame(
+                    rolagem, height=1, fg_color=("gray80", "gray30"),
+                ).pack(fill="x", pady=(14, 12))
+            ctk.CTkLabel(
+                rolagem, text=titulo, anchor="w",
+                font=ctk.CTkFont(size=14, weight="bold"),
+            ).pack(fill="x", pady=(0, 7))
+            for nome, descricao in itens:
+                ctk.CTkLabel(
+                    rolagem, text=nome, anchor="w",
+                    font=ctk.CTkFont(size=12, weight="bold"),
+                ).pack(fill="x", pady=(6, 0))
+                ctk.CTkLabel(
+                    rolagem, text=descricao, anchor="w", justify="left",
+                    wraplength=445, text_color=("gray35", "gray75"),
+                    font=ctk.CTkFont(size=12),
+                ).pack(fill="x", pady=(2, 0))
+
+        ctk.CTkButton(
+            conteudo, text="Fechar", width=100, command=janela.destroy,
+        ).pack(anchor="e", pady=(12, 0))
+        janela.bind("<Escape>", lambda _event: janela.destroy())
+        janela.focus()
 
     def _atualizar_cores_log(self):
         """Sincroniza as cores do tk.Text e tk.Listbox com o tema CTk atual."""
@@ -149,6 +232,14 @@ class PdfToExcelApp:
                      text_color=("gray40", "gray70")
                      ).grid(row=1, column=0, sticky="w")
 
+        self.btn_ajuda = ctk.CTkButton(
+            header, text="Ajuda", width=72, height=30,
+            fg_color=("gray80", "gray25"), text_color=("gray10", "gray90"),
+            hover_color=("gray70", "gray35"),
+            command=self.mostrar_ajuda
+        )
+        self.btn_ajuda.grid(row=0, column=1, rowspan=2, sticky="e", padx=(0, 8))
+
         # Botão tema no canto superior direito
         self.btn_tema = ctk.CTkButton(
             header, text="🌙  Dark", width=100, height=30,
@@ -156,7 +247,7 @@ class PdfToExcelApp:
             hover_color=("gray70", "gray35"),
             command=self.alternar_tema
         )
-        self.btn_tema.grid(row=0, column=1, rowspan=2, sticky="e")
+        self.btn_tema.grid(row=0, column=2, rowspan=2, sticky="e")
 
         # Seções
         self.criar_secao_selecao(main_frame, 1)

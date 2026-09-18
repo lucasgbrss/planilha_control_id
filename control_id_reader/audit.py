@@ -90,9 +90,11 @@ def _auditar_dia(dia):
     batidas = [dia.get(campo, "").strip() for campo in PUNCH_FIELDS]
     preenchidas = [valor for valor in batidas if valor]
     ch = dia.get("ch", "").strip()
+    cartao = dia.get("origem") == "cartao"
+    dia_previsto = bool(ch or (cartao and dia.get("previsto", "").strip()))
 
     if not preenchidas:
-        if ch:
+        if dia_previsto and not dia.get("ausencia_justificada"):
             issues.append(_issue("Atenção", nome, cpf, data, "Marcações", "Dia de trabalho sem marcações de ponto."))
         return issues
 
@@ -113,7 +115,7 @@ def _auditar_dia(dia):
     elif not _hora_valida(duracao):
         issues.append(_issue("Atenção", nome, cpf, data, "Duração", f"Duração com formato inválido: {duracao}."))
 
-    if not ch:
+    if not ch and not cartao:
         issues.append(_issue("Info", nome, cpf, data, "CH", "Código de horário ausente em dia com marcações."))
 
     return issues

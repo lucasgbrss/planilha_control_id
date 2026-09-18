@@ -1,10 +1,38 @@
 from datetime import datetime
 import unittest
 
-from control_id_reader.excel_writer import build_ch_summary_rows, build_workbook, generate_suggested_filename
+from control_id_reader.excel_writer import (
+    build_ch_summary_rows,
+    build_workbook,
+    dias_faltados,
+    dias_trabalho_totais,
+    generate_suggested_filename,
+)
+from tests.card_fixtures import card_tables
+from control_id_reader.parsers import extract_card_punch_rows_from_tables
 
 
 class ExcelWriterTest(unittest.TestCase):
+    def test_card_summary_uses_planned_days_without_inventing_ch(self):
+        dias = extract_card_punch_rows_from_tables(card_tables())
+        funcionarios = {"12345678901": {"nome": "Ana Souza", "cpf": "12345678901", "_dias": dias}}
+
+        wb = build_workbook(dias, funcionarios)
+        ws = wb["Ponto"]
+        header_row = next(row for row in range(1, ws.max_row + 1) if ws.cell(row, 1).value == "DIA")
+        resumo_row = next(row for row in range(1, ws.max_row + 1) if ws.cell(row, 1).value == "NOME")
+        headers = [ws.cell(header_row, col).value for col in range(1, ws.max_column + 1)]
+
+        self.assertEqual(len(dias_trabalho_totais(dias)), 4)
+        self.assertEqual(len(dias_faltados(dias)), 1)
+        self.assertIn("PREVISTO", headers)
+        self.assertIn("TOTAL NOTURNO", headers)
+        self.assertNotIn("Resumo CH", wb.sheetnames)
+        self.assertIn("07:34", [ws.cell(row, headers.index("DURAÇÃO") + 1).value for row in range(1, ws.max_row + 1)])
+        self.assertEqual(ws.cell(resumo_row + 1, 9).value, 1)
+        self.assertEqual(ws.cell(resumo_row + 1, 10).value, 1)
+        self.assertEqual(ws.cell(resumo_row + 1, 11).value, 4)
+
     def test_generate_suggested_filename_single_employee(self):
         funcionarios = {
             "12345678901": {
